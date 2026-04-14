@@ -11,13 +11,9 @@ from __future__ import annotations
 import json
 import logging
 import re
-<<<<<<< Updated upstream
-import html
-=======
 import time
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
->>>>>>> Stashed changes
 
 from app.core.config import settings
 from app.services.llm_client import chat, chat_json, chat_stream
@@ -40,6 +36,15 @@ from app.services.rag import search_snippets
 from app.services.validator import validate
 
 log = logging.getLogger(__name__)
+
+
+# Минимальный guard от «ку»-образного мусора: нужна хоть какая-то буква и ≥3 символа,
+# иначе не стартуем пайплайн (иначе получим заглушку вроде `function understandTask ... end`).
+def _is_task_like(prompt: str) -> bool:
+    s = (prompt or "").strip()
+    if len(s) < 3:
+        return False
+    return bool(re.search(r"[A-Za-zА-Яа-яЁё]", s))
 
 
 @dataclass
@@ -136,15 +141,9 @@ async def run_planner(user_prompt: str) -> Plan:
         return Plan(steps=[user_prompt])
 
 
-<<<<<<< Updated upstream
-def run_searcher(step: str) -> str:
-    keywords = step.split()[:5]
-    return search_snippets(keywords, top_k=2)
-=======
 async def run_searcher(step: str) -> str:
     # Hybrid BM25 + dense + RRF; токенизация/стоп-слова — внутри search_snippets.
     return await search_snippets(step)
->>>>>>> Stashed changes
 
 
 async def run_lua_node(
@@ -220,12 +219,6 @@ def _format_multistep_task(user_prompt: str, steps: list[str]) -> str:
     )
 
 
-<<<<<<< Updated upstream
-def _merge_steps(step_codes: list[tuple[str, str]]) -> str:
-    return "\n\n".join([code for step, code in step_codes])
-
-async def generate_code(user_prompt: str) -> str:
-=======
 def _enrich_with_clarifications(prompt: str, qa: list[tuple[str, str]]) -> str:
     base = prompt.strip()
     lines: list[str] = []
@@ -291,7 +284,6 @@ async def _plan_and_code(user_prompt: str, emit: Emit = None) -> str:
             await emit({"type": "stage_done", "stage": "coder", "code": full_code})
         return await _fix_loop(full_code, emit=emit)
 
->>>>>>> Stashed changes
     log.info("Planner: generating plan for prompt=%r", user_prompt)
     await _emit_stage(emit, "planner")
     plan = await run_planner(user_prompt)
@@ -326,6 +318,17 @@ async def generate_code(user_prompt: str, emit: Emit = None) -> GenerationOutcom
     """Полный пайплайн нового запроса: сначала clarifier, потом (опционально) код."""
     log.info("[pipeline] === START prompt=%r (len=%d) ===", user_prompt[:80], len(user_prompt))
     t_total = time.perf_counter()
+
+    if not _is_task_like(user_prompt):
+        msg = (
+            "Опиши задачу полнее — что должна делать Lua-нода, "
+            "какие поля ждёт на входе, что возвращать."
+        )
+        log.info("[pipeline] rejected non-task prompt: %r", (user_prompt or "")[:80])
+        if emit is not None:
+            await emit({"type": "error", "message": msg})
+        return GenerationOutcome(questions=[msg])
+
     await _emit_stage(emit, "clarifier")
     t = time.perf_counter()
     clarification = await run_clarifier(user_prompt)
@@ -386,9 +389,6 @@ async def _fix_loop(full_code: str, emit: Emit = None) -> str:
             )
             full_code = full_code.replace(block_to_fix, fixed_block, 1)
         else:
-<<<<<<< Updated upstream
-            full_code = await run_fixer(full_code, err.message)
-=======
             # блок не уникален (или не найден) — переписываем весь файл целиком,
             # иначе str.replace либо правит не тот кусок, либо стирает всё остальное.
             full_code = await run_fixer(
@@ -398,7 +398,6 @@ async def _fix_loop(full_code: str, emit: Emit = None) -> str:
             await emit(
                 {"type": "stage_done", "stage": "fixer", "cycle": cycle, "code": full_code}
             )
->>>>>>> Stashed changes
 
     await _emit_stage(emit, "validator", cycle=settings.max_fix_cycles + 1, final=True)
     result = validate(full_code)
