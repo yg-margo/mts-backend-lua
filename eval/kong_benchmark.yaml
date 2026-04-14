@@ -1,0 +1,1091 @@
+- id: kong_request_termination
+  task_description: "Прервать запрос, вернув клиенту заданный HTTP-статус (например, 503) и тело ответа, опционально срабатывая только при наличии триггер-заголовка."
+  category: routing
+  complexity: simple
+  reference_code: |
+    -- Kong plugin: request-termination, function: RequestTerminationHandler:access (handler.lua)
+    function RequestTerminationHandler:access(conf)
+      local status  = conf.status_code
+      local content = conf.body
+      local req_headers, req_query
+
+      if conf.trigger or conf.echo then
+        req_headers = kong.request.get_headers()
+        req_query = kong.request.get_query()
+
+        if conf.trigger
+           and not req_headers[conf.trigger]
+           and not req_query[conf.trigger] then
+          return -- trigger set but not found, nothing to do
+        end
+      end
+
+      if conf.echo then
+        content = {
+          message = conf.message or DEFAULT_RESPONSE[status],
+          kong = {
+            node_id = kong.node.get_id(),
+            worker_pid = ngx.worker.pid(),
+            hostname = kong.node.get_hostname(),
+          },
+          request = {
+            scheme = kong.request.get_scheme(),
+            host = kong.request.get_host(),
+            port = kong.request.get_port(),
+            headers = req_headers,
+            query = req_query,
+            body = kong.request.get_body(),
+            raw_body = kong.request.get_raw_body(),
+            method = kong.request.get_method(),
+            path = kong.request.get_path(),
+            uri_captures = kong.request.get_uri_captures(),
+          },
+          matched_route = kong.router.get_route(),
+          matched_service = kong.router.get_service(),
+        }
+
+        return kong.response.exit(status, content)
+      end
+
+      if content then
+        local headers = {
+          ["Content-Type"] = conf.content_type
+        }
+
+        return kong.response.exit(status, content, headers)
+      end
+
+      local message = conf.message or DEFAULT_RESPONSE[status]
+      return kong.response.exit(status, message and { message = message } or nil)
+    end
+
+- id: kong_redirect
+  task_description: "Выполнить HTTP-редирект на заданный URL с указанным статус-кодом, опционально сохраняя путь и query-строку исходного запроса."
+  category: routing
+  complexity: simple
+  reference_code: |
+    -- Kong plugin: redirect, function: RedirectHandler:access (handler.lua)
+    function RedirectHandler:access(conf)
+        -- Use the 'location' as-is as the default
+        -- This is equivalent to conf.incoming_path == 'ignore'
+        local location = conf.location
+
+        if conf.keep_incoming_path then
+            -- Parse the URL in 'conf.location' and the incoming request
+            local location_url = ada.parse(location)
+
+            -- Overwrite the path in 'location' with the path from the incoming request
+            location = location_url:set_pathname(kong.request.get_path()):set_search(kong.request.get_raw_query()):get_href()
+        end
+
+        local headers = {
+            ["Location"] = location
+        }
+
+        return kong.response.exit(conf.status_code, "redirecting", headers)
+    end
+
+- id: kong_correlation_id
+  task_description: "Прокинуть апстриму заголовок с идентификатором запроса (сгенерировать UUID, если заголовок отсутствует) и опционально вернуть его клиенту."
+  category: transformation
+  complexity: simple
+  reference_code: |
+    -- Kong plugin: correlation-id, function: CorrelationIdHandler:access (handler.lua)
+    function CorrelationIdHandler:access(conf)
+      -- Set header for upstream
+      local correlation_id = kong.request.get_header(conf.header_name)
+      if not correlation_id or correlation_id == "" then
+        -- Generate the header value
+        correlation_id = generators[conf.generator]()
+        if correlation_id then
+          kong.service.request.set_header(conf.header_name, correlation_id)
+        end
+      end
+
+      kong.log.set_serialize_value("correlation_id", correlation_id)
+
+      if conf.echo_downstream then
+        -- For later use, to echo it back downstream
+        kong.ctx.plugin.correlation_id = correlation_id
+      end
+    end
+
+- id: kong_ip_restriction
+  task_description: "Разрешить или запретить запрос по IP-адресу клиента на основе списков allow/deny и вернуть 403 с сообщением, если адрес не проходит проверку."
+  category: validation
+  complexity: simple
+  reference_code: |
+    -- Kong plugin: ip-restriction, function: do_restrict (handler.lua)
+    local function do_restrict(conf)
+      local binary_remote_addr = ngx_var.binary_remote_addr
+      if not binary_remote_addr then
+        return do_exit(403,
+                       "Cannot identify the client IP address, " ..
+                       "unix domain sockets are not supported.")
+      end
+
+      local deny = conf.deny
+
+      if not isempty(deny) then
+        local blocked = match_bin(deny, binary_remote_addr)
+        if blocked then
+          return do_exit(conf.status, conf.message)
+        end
+      end
+
+      local allow = conf.allow
+
+      if not isempty(allow) then
+        local allowed = match_bin(allow, binary_remote_addr)
+        if not allowed then
+          return do_exit(conf.status, conf.message)
+        end
+      end
+    end
+
+- id: kong_bot_detection
+  task_description: "Отклонять запросы с кодом 403 от известных ботов по User-Agent, учитывая списки allow/deny и кешируя проверенные строки агента."
+  category: validation
+  complexity: simple
+  reference_code: |
+    -- Kong plugin: bot-detection, function: BotDetectionHandler:access (handler.lua)
+    function BotDetectionHandler:access(conf)
+      local user_agent, err = get_user_agent()
+      if err then
+        return kong.response.error(BAD_REQUEST, err)
+      end
+
+      if not user_agent then
+        return
+      end
+
+      local cache = ua_caches[conf]
+      if not cache then
+        cache = lrucache.new(UA_CACHE_SIZE)
+        ua_caches[conf] = cache
+      end
+
+      local match  = cache:get(user_agent)
+      if not match then
+        match = examine_agent(user_agent, conf)
+        cache:set(user_agent, match)
+      end
+
+      -- if we saw a denied UA or bot, return forbidden. otherwise,
+      -- fall out of our handler
+      if match > 1 then
+        return kong.response.error(FORBIDDEN)
+      end
+    end
+
+- id: kong_request_transformer
+  task_description: "Модифицировать исходящий запрос к апстриму: переписать URI и метод, добавить/удалить/заменить HTTP-заголовки, query-параметры и тело."
+  category: transformation
+  complexity: medium
+  reference_code: |
+    -- Kong plugin: request-transformer, function: RequestTransformerHandler:access -> _M.execute (access.lua)
+    function _M.execute(conf)
+      -- meta table for the sandbox, exposing lazily loaded values
+      local __meta_environment = {
+        __index = function(self, key)
+          local lazy_loaders = {
+            headers = function(self)
+              return get_headers() or EMPTY
+            end,
+            query_params = function(self)
+              return get_uri_args() or EMPTY
+            end,
+            uri_captures = function(self)
+              return (ngx.ctx.router_matches or EMPTY).uri_captures or EMPTY
+            end,
+            shared = function(self)
+              return ((kong or EMPTY).ctx or EMPTY).shared or EMPTY
+            end,
+          }
+          local loader = lazy_loaders[key]
+          if not loader then
+            if lua_enabled and not sandbox_enabled then
+              return _G[key]
+            end
+            return
+          end
+          -- set the result on the table to not load again
+          local value = loader()
+          rawset(self, key, value)
+          return value
+        end,
+        __newindex = function(self)
+          error("This environment is read-only.")
+        end,
+      }
+
+      local template_env = {}
+      if lua_enabled and sandbox_enabled then
+        -- load the sandbox environment to be used to render the template
+        template_env = cycle_aware_deep_copy(sandbox.configuration.environment)
+        -- here we can optionally add functions to expose to the sandbox, eg:
+        -- tostring = tostring,
+        -- because headers may contain array elements such as duplicated headers
+        -- type is a useful function in these cases. See issue #25.
+        template_env.type = type
+      end
+      setmetatable(template_env, __meta_environment)
+
+      transform_uri(conf, template_env)
+      transform_method(conf)
+      transform_headers(conf, template_env)
+      transform_body(conf, template_env)
+      transform_querystrings(conf, template_env)
+    end
+
+- id: kong_response_transformer
+  task_description: "Преобразовать заголовки ответа апстрима: удалить, переименовать, заменить, добавить или дописать указанные HTTP-заголовки перед отправкой клиенту."
+  category: transformation
+  complexity: medium
+  reference_code: |
+    -- Kong plugin: response-transformer, function: ResponseTransformerHandler:header_filter -> _M.transform_headers (header_transformer.lua)
+    function _M.transform_headers(conf, headers)
+      local clear_header = kong.response.clear_header
+      local set_header   = kong.response.set_header
+      local add_header   = kong.response.add_header
+
+      -- remove headers
+      for _, header_name in iter(conf.remove.headers) do
+          clear_header(header_name)
+      end
+
+      -- rename headers(s)
+      for _, old_name, new_name in iter(conf.rename.headers) do
+        if headers[old_name] ~= nil and new_name then
+          local value = headers[old_name]
+          set_header(new_name, value)
+          clear_header(old_name)
+        end
+      end
+
+      -- replace headers
+      for _, header_name, header_value in iter(conf.replace.headers) do
+        if headers[header_name] ~= nil and header_value then
+          set_header(header_name, header_value)
+        end
+      end
+
+      -- add headers
+      for _, header_name, header_value in iter(conf.add.headers) do
+        if headers[header_name] == nil and header_value then
+          set_header(header_name, header_value)
+        end
+      end
+
+      -- append headers
+      for _, header_name, header_value in iter(conf.append.headers) do
+        add_header(header_name, header_value)
+      end
+
+      -- Removing the content-length header because the body is going to change
+      if is_body_transform_set(conf) and is_json_body(headers["Content-Type"]) then
+        clear_header("Content-Length")
+      end
+    end
+
+- id: kong_cors
+  task_description: "Обработать CORS preflight-запрос (OPTIONS): проверить заголовок Origin, выставить Access-Control-Allow-* и вернуть 200, либо пропустить обычный запрос дальше."
+  category: transformation
+  complexity: medium
+  reference_code: |
+    -- Kong plugin: cors, function: CorsHandler:access (handler.lua)
+    function CorsHandler:access(conf)
+      local req_origin = kong.request.get_header("Origin")
+      if kong.request.get_method() ~= "OPTIONS"
+         or not is_origin_provided(req_origin)
+         or not kong.request.get_header("Access-Control-Request-Method")
+      then
+        return
+      end
+
+      -- don't add any response header because we are delegating the preflight to
+      -- the upstream API (conf.preflight_continue=true), or because we already
+      -- added them all
+      kong.ctx.plugin.skip_response_headers = true
+
+      if conf.preflight_continue then
+        return
+      end
+
+      local allow_all = configure_origin(conf, false, req_origin)
+      configure_credentials(conf, allow_all, false, req_origin)
+
+      local set_header = kong.response.set_header
+
+      if conf.headers and #conf.headers > 0 then
+        set_header("Access-Control-Allow-Headers", concat(conf.headers, ","))
+
+      else
+        local acrh = kong.request.get_header("Access-Control-Request-Headers")
+        if acrh then
+          set_header("Access-Control-Allow-Headers", acrh)
+        else
+          kong.response.clear_header("Access-Control-Allow-Headers")
+        end
+      end
+
+      local methods = conf.methods and concat(conf.methods, ",")
+                      or "GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS,TRACE,CONNECT"
+
+      set_header("Access-Control-Allow-Methods", methods)
+
+      if conf.max_age then
+        set_header("Access-Control-Max-Age", tostring(conf.max_age))
+      end
+
+      if conf.private_network and
+        kong.request.get_header("Access-Control-Request-Private-Network") == 'true' then
+          set_header("Access-Control-Allow-Private-Network", 'true')
+      end
+
+      return kong.response.exit(HTTP_OK)
+    end
+
+- id: kong_key_auth
+  task_description: "Аутентифицировать клиента по API-ключу из заголовка, query или тела запроса, найти привязанного consumer и вернуть 401 при отсутствии/неверном ключе."
+  category: auth
+  complexity: medium
+  reference_code: |
+    -- Kong plugin: key-auth, function: KeyAuthHandler:access -> do_authentication (handler.lua)
+    local function do_authentication(conf)
+      if type(conf.key_names) ~= "table" then
+        kong.log.err("no conf.key_names set, aborting plugin execution")
+        return nil, server_error(ERR_INVALID_PLUGIN_CONF)
+      end
+
+      local www_auth_content = conf.realm and fmt('Key realm="%s"', conf.realm) or 'Key'
+      local headers = kong.request.get_headers()
+      local query = kong.request.get_query()
+      local key
+      local body
+
+      -- search in headers & querystring
+      for _, name in ipairs(conf.key_names) do
+        local v
+
+        if conf.key_in_header then
+          v = headers[name]
+        end
+
+        if not v and conf.key_in_query then
+          -- search in querystring
+          v = query[name]
+        end
+
+        -- search the body, if we asked to
+        if not v and conf.key_in_body then
+          if not body then
+            body = get_body()
+          end
+
+          v = body[name]
+        end
+
+        if type(v) == "string" then
+          key = v
+
+          if conf.hide_credentials then
+            kong.service.request.clear_query_arg(name)
+            kong.service.request.clear_header(name)
+
+            if conf.key_in_body then
+              if not body then
+                body = get_body()
+              end
+
+              if body ~= EMPTY then
+                if body then
+                  body[name] = nil
+                end
+
+                kong.service.request.set_body(body)
+              end
+            end
+          end
+
+          break
+
+        elseif type(v) == "table" then
+          -- duplicate API key
+          return nil, unauthorized(ERR_DUPLICATE_API_KEY, www_auth_content)
+        end
+      end
+
+      -- this request is missing an API key, HTTP 401
+      if not key or key == "" then
+        return nil, unauthorized(ERR_NO_API_KEY, www_auth_content)
+      end
+
+      -- retrieve our consumer linked to this API key
+
+      local cache = kong.cache
+
+      local credential_cache_key = kong.db.keyauth_credentials:cache_key(key)
+      -- hit_level be 1 if stale value is propelled into L1 cache; so set a minimal `resurrect_ttl`
+      local credential, err, hit_level = cache:get(credential_cache_key, { resurrect_ttl = 0.001 }, load_credential,
+                                        key)
+
+      if err then
+        return error(err)
+      end
+
+      kong.log.debug("credential hit_level: ", tostring(hit_level))
+
+      -- no credential in DB, for this key, it is invalid, HTTP 401
+      if not credential or hit_level == 4 then
+        return nil, unauthorized(ERR_INVALID_AUTH_CRED, www_auth_content)
+      end
+
+      -----------------------------------------
+      -- Success, this request is authenticated
+      -----------------------------------------
+
+      -- retrieve the consumer linked to this API key, to set appropriate headers
+      local consumer_cache_key, consumer
+      consumer_cache_key = kong.db.consumers:cache_key(credential.consumer.id)
+      consumer, err      = cache:get(consumer_cache_key, nil,
+                                     kong.client.load_consumer,
+                                     credential.consumer.id)
+      if err then
+        return error(err)
+      end
+
+      set_consumer(consumer, credential)
+
+      return true
+    end
+
+- id: kong_basic_auth
+  task_description: "Разобрать заголовок Authorization: Basic, сверить логин и пароль с хранилищем и вернуть 401 с WWW-Authenticate при неуспешной проверке."
+  category: auth
+  complexity: medium
+  reference_code: |
+    -- Kong plugin: basic-auth, function: BasicAuthHandler:access -> do_authentication (access.lua)
+    local function do_authentication(conf)
+      local www_authenticate = "Basic realm=\"" .. conf.realm .. "\""
+      local authorization = kong.request.get_header("authorization")
+      local proxy_authorization = kong.request.get_header("proxy-authorization")
+
+      -- If both headers are missing, return 401
+      if not (authorization or proxy_authorization) then
+        return false, unauthorized("Unauthorized", www_authenticate)
+      end
+
+      local credential
+      local given_username, given_password = retrieve_credentials("proxy-authorization", conf, proxy_authorization)
+      if given_username and given_password then
+        credential = load_credential_from_db(given_username)
+      end
+
+      -- Try with the authorization header
+      if not credential then
+        given_username, given_password = retrieve_credentials("authorization", conf, authorization)
+        if given_username and given_password then
+          credential = load_credential_from_db(given_username)
+        else
+          return false, unauthorized("Unauthorized", www_authenticate)
+        end
+      end
+
+      if not credential or not validate_credentials(credential, given_password) then
+        return false, unauthorized("Unauthorized", www_authenticate)
+      end
+
+      -- Retrieve consumer
+      local consumer_cache_key = kong.db.consumers:cache_key(credential.consumer.id)
+      local consumer, err      = kong.cache:get(consumer_cache_key, nil,
+                                                kong.client.load_consumer,
+                                                credential.consumer.id)
+      if err then
+        return error(err)
+      end
+
+      set_consumer(consumer, credential)
+
+      return true
+    end
+
+- id: kong_request_size_limiting
+  task_description: "Отклонить запрос с кодом 413 (или 417 для Expect: 100-continue), если размер тела превышает лимит в байтах, килобайтах или мегабайтах."
+  category: validation
+  complexity: medium
+  reference_code: |
+    -- Kong plugin: request-size-limiting, function: RequestSizeLimitingHandler:access (handler.lua)
+    function RequestSizeLimitingHandler:access(conf)
+      local headers = kong.request.get_headers()
+      local cl = headers["content-length"]
+
+      if cl and tonumber(cl) then
+        check_size(tonumber(cl), conf.allowed_payload_size, headers, conf.size_unit)
+      else
+        if conf.require_content_length and headers["Transfer-Encoding"] ~= "chunked" then
+          return kong.response.error(411, "A valid Content-Length header is required")
+        end
+        -- If the request body is too big, this could consume too much memory (to check)
+        local data = kong.request.get_raw_body()
+        if data then
+          check_size(#data, conf.allowed_payload_size, headers, conf.size_unit)
+        else
+          -- Check the file size when the request body buffered to a temporary file
+          local body_filepath = ngx.req.get_body_file()
+          if body_filepath then
+            local file_size = lfs.attributes(body_filepath, "size")
+            check_size(file_size, conf.allowed_payload_size, headers, conf.size_unit)
+          else
+            kong.log.warn("missing request body")
+          end
+        end
+      end
+    end
+
+- id: kong_file_log
+  task_description: "Записать сериализованный JSON-лог запроса в файл на диске в фазе log, переиспользуя открытый файловый дескриптор и поддерживая пользовательские поля."
+  category: logging
+  complexity: medium
+  reference_code: |
+    -- Kong plugin: file-log, function: FileLogHandler:log (handler.lua)
+    function FileLogHandler:log(conf)
+      if conf.custom_fields_by_lua then
+        local set_serialize_value = kong.log.set_serialize_value
+        for key, expression in pairs(conf.custom_fields_by_lua) do
+          set_serialize_value(key, sandbox(expression)())
+        end
+      end
+
+      local message = kong.log.serialize()
+      log(conf, message)
+    end
+
+- id: kong_http_log
+  task_description: "Отправить сериализованный лог запроса по HTTP на внешний эндпоинт через очередь с батчингом, добавив пользовательские поля через sandboxed-Lua."
+  category: logging
+  complexity: medium
+  reference_code: |
+    -- Kong plugin: http-log, function: HttpLogHandler:log (handler.lua)
+    function HttpLogHandler:log(conf)
+      if conf.custom_fields_by_lua then
+        local set_serialize_value = kong.log.set_serialize_value
+        for key, expression in pairs(conf.custom_fields_by_lua) do
+          set_serialize_value(key, sandbox(expression)())
+        end
+      end
+
+      local queue_conf = Queue.get_plugin_params("http-log", conf, make_queue_name(conf))
+      kong.log.debug("Queue name automatically configured based on configuration parameters to: ", queue_conf.name)
+
+      local ok, err = Queue.enqueue(
+        queue_conf,
+        send_entries,
+        conf,
+        cjson.encode(kong.log.serialize())
+      )
+      if not ok then
+        kong.log.err("Failed to enqueue log entry to log server: ", err)
+      end
+    end
+
+- id: kong_jwt
+  task_description: "Извлечь JWT из заголовка, cookie или query, проверить подпись и registered claims по секрету consumer и вернуть 401 при невалидном токене."
+  category: auth
+  complexity: hard
+  reference_code: |
+    -- Kong plugin: jwt, function: JwtHandler:access -> do_authentication (handler.lua)
+    local function do_authentication(conf)
+      local token, err = retrieve_tokens(conf)
+      if err then
+        return error(err)
+      end
+
+      local www_authenticate_base, www_authenticate_with_error
+      if conf.realm then
+        www_authenticate_base = fmt('Bearer realm="%s"', conf.realm)
+        www_authenticate_with_error = www_authenticate_base .. ', error="invalid_token"'
+
+      else
+        www_authenticate_base = "Bearer"
+        www_authenticate_with_error = 'Bearer error="invalid_token"'
+      end
+
+      local token_type = type(token)
+      if token_type ~= "string" then
+        if token_type == "nil" then
+          return false, unauthorized("Unauthorized", www_authenticate_base)
+        elseif token_type == "table" then
+          return false, unauthorized("Multiple tokens provided", www_authenticate_with_error)
+        else
+          return false, unauthorized("Unrecognizable token", www_authenticate_with_error)
+        end
+      end
+
+      -- Decode token to find out who the consumer is
+      local jwt, err = jwt_decoder:new(token)
+      if err then
+        return false, unauthorized("Bad token; " .. tostring(err), www_authenticate_with_error)
+      end
+
+      local claims = jwt.claims
+      local header = jwt.header
+
+      local jwt_secret_key = claims[conf.key_claim_name] or header[conf.key_claim_name]
+      if not jwt_secret_key then
+        return false, unauthorized("No mandatory '" .. conf.key_claim_name .. "' in claims", www_authenticate_with_error)
+      elseif jwt_secret_key == "" then
+        return false, unauthorized("Invalid '" .. conf.key_claim_name .. "' in claims", www_authenticate_with_error)
+      end
+
+      -- Retrieve the secret
+      local jwt_secret_cache_key = kong.db.jwt_secrets:cache_key(jwt_secret_key)
+      local jwt_secret, err      = kong.cache:get(jwt_secret_cache_key, nil,
+                                                  load_credential, jwt_secret_key)
+      if err then
+        return error(err)
+      end
+
+      if not jwt_secret then
+        return false, unauthorized("No credentials found for given '" .. conf.key_claim_name .. "'", www_authenticate_with_error)
+      end
+
+      local algorithm = jwt_secret.algorithm or "HS256"
+
+      -- Verify "alg"
+      if jwt.header.alg ~= algorithm then
+        return false, unauthorized("Invalid algorithm", www_authenticate_with_error)
+      end
+
+      local is_symmetric_algorithm = algorithm ~= nil and algorithm:sub(1, 2) == "HS"
+      local jwt_secret_value
+
+      if is_symmetric_algorithm and conf.secret_is_base64 then
+        jwt_secret_value = jwt:base64_decode(jwt_secret.secret)
+      elseif is_symmetric_algorithm then
+        jwt_secret_value = jwt_secret.secret
+      else
+        -- rsa_public_key is either nil or a valid plain text pem file, it can't be base64 decoded.
+        -- see #13710
+        jwt_secret_value = jwt_secret.rsa_public_key
+      end
+
+      if not jwt_secret_value then
+        return false, unauthorized("Invalid key/secret", www_authenticate_with_error)
+      end
+
+      -- Now verify the JWT signature
+      if not jwt:verify_signature(jwt_secret_value) then
+        return false, unauthorized("Invalid signature", www_authenticate_with_error)
+      end
+
+      -- Verify the JWT registered claims
+      local ok_claims, errors = jwt:verify_registered_claims(conf.claims_to_verify)
+      if not ok_claims then
+        return false, unauthorized(nil, www_authenticate_with_error, errors)
+      end
+
+      -- Verify the JWT registered claims
+      if conf.maximum_expiration ~= nil and conf.maximum_expiration > 0 then
+        local ok, errors = jwt:check_maximum_expiration(conf.maximum_expiration)
+        if not ok then
+          return false, unauthorized(nil, www_authenticate_with_error, errors)
+        end
+      end
+
+      -- Retrieve the consumer
+      local consumer_cache_key = kong.db.consumers:cache_key(jwt_secret.consumer.id)
+      local consumer, err      = kong.cache:get(consumer_cache_key, nil,
+                                                kong.client.load_consumer,
+                                                jwt_secret.consumer.id, true)
+      if err then
+        return error(err)
+      end
+
+      -- However this should not happen
+      if not consumer then
+        return false, {
+          status = 401,
+          message = fmt("Could not find consumer for '%s=%s'", conf.key_claim_name, jwt_secret_key)
+        }
+      end
+
+      set_consumer(consumer, jwt_secret, token)
+
+      return true
+    end
+
+- id: kong_hmac_auth
+  task_description: "Проверить HMAC-подпись запроса в заголовке Authorization/Proxy-Authorization, сверить clock skew, тело и вернуть 401 при невалидной подписи."
+  category: auth
+  complexity: hard
+  reference_code: |
+    -- Kong plugin: hmac-auth, function: HMACAuthHandler:access -> do_authentication (access.lua)
+    local function do_authentication(conf)
+      local authorization = kong_request.get_header(AUTHORIZATION)
+      local proxy_authorization = kong_request.get_header(PROXY_AUTHORIZATION)
+      local www_auth_content = conf.realm and fmt('hmac realm="%s"', conf.realm) or 'hmac'
+
+      -- If both headers are missing, return 401
+      if not (authorization or proxy_authorization) then
+        return false, unauthorized("Unauthorized", www_auth_content)
+      end
+
+      -- validate clock skew
+      if not (validate_clock_skew(X_DATE, conf.clock_skew) or
+              validate_clock_skew(DATE, conf.clock_skew)) then
+        return false, unauthorized(
+          "HMAC signature cannot be verified, a valid date or " ..
+          "x-date header is required for HMAC Authentication",
+          www_auth_content
+        )
+      end
+
+      -- retrieve hmac parameter from Proxy-Authorization header
+      local hmac_params = retrieve_hmac_fields(proxy_authorization)
+
+      -- Try with the authorization header
+      if not hmac_params.username then
+        hmac_params = retrieve_hmac_fields(authorization)
+        if hmac_params and conf.hide_credentials then
+          kong_service_request.clear_header(AUTHORIZATION)
+        end
+
+      elseif conf.hide_credentials then
+        kong_service_request.clear_header(PROXY_AUTHORIZATION)
+      end
+
+      local ok, err = validate_params(hmac_params, conf)
+      if not ok then
+        kong.log.debug(err)
+        return false, unauthorized(SIGNATURE_NOT_VALID, www_auth_content)
+      end
+
+      -- validate signature
+      local credential = load_credential(hmac_params.username)
+      if not credential then
+        kong.log.debug("failed to retrieve credential for ", hmac_params.username)
+        return false, unauthorized(SIGNATURE_NOT_VALID, www_auth_content)
+      end
+
+      hmac_params.secret = credential.secret
+
+      if not validate_signature(hmac_params) then
+        return false, unauthorized(SIGNATURE_NOT_SAME, www_auth_content)
+      end
+
+      -- If request body validation is enabled, then verify digest.
+      if conf.validate_request_body and not validate_body() then
+        kong.log.debug("digest validation failed")
+        return false, unauthorized(SIGNATURE_NOT_SAME, www_auth_content)
+      end
+
+      -- Retrieve consumer
+      local consumer_cache_key, consumer
+      consumer_cache_key = kong.db.consumers:cache_key(credential.consumer.id)
+      consumer, err      = kong.cache:get(consumer_cache_key, nil,
+                                          kong_client.load_consumer,
+                                          credential.consumer.id)
+      if err then
+        return error(err)
+      end
+
+      set_consumer(consumer, credential)
+
+      return true
+    end
+
+- id: kong_oauth2
+  task_description: "Извлечь OAuth2 access token из запроса, проверить срок годности и принадлежность сервису, найти consumer и вернуть 401 invalid_token при ошибке."
+  category: auth
+  complexity: hard
+  reference_code: |
+    -- Kong plugin: oauth2, function: OAuthHandler:access -> do_authentication (access.lua)
+    local function do_authentication(conf)
+      local access_token = parse_access_token(conf)
+      if not access_token or access_token == "" then
+        return nil, {
+          status = 401,
+          message = {
+            [ERROR] = "invalid_request",
+            error_description = "The access token is missing"
+          },
+          headers = {
+            ["WWW-Authenticate"] = make_www_authenticate_header(conf.realm)
+          }
+        }
+      end
+
+      local token = retrieve_token(conf, access_token)
+      if not token then
+        return nil, {
+          status = 401,
+          message = {
+            [ERROR] = "invalid_token",
+            error_description = "The access token is invalid or has expired"
+          },
+          headers = {
+            ["WWW-Authenticate"] = make_www_authenticate_header(conf.realm, "invalid_token",
+              "The access token is invalid or has expired")
+          }
+        }
+      end
+
+      if (token.service and token.service.id and
+          kong.router.get_service().id ~= token.service.id) or
+          ((not token.service or not token.service.id) and
+            not conf.global_credentials) then
+        return nil, {
+          status = 401,
+          message = {
+            [ERROR] = "invalid_token",
+            error_description = "The access token is invalid or has expired"
+          },
+          headers = {
+            ["WWW-Authenticate"] = make_www_authenticate_header(conf.realm, "invalid_token",
+              "The access token is invalid or has expired")
+          }
+        }
+      end
+
+      -- Check expiration date
+      if token.expires_in > 0 then -- zero means the token never expires
+        local now = timestamp.get_utc() / 1000
+        if now - token.created_at > token.expires_in then
+          return nil, {
+            status = 401,
+            message = {
+              [ERROR] = "invalid_token",
+              error_description = "The access token is invalid or has expired"
+            },
+            headers = {
+              ["WWW-Authenticate"] = make_www_authenticate_header(conf.realm, "invalid_token",
+                "The access token is invalid or has expired")
+            }
+          }
+        end
+      end
+
+      -- Retrieve the credential from the token
+      local credential_cache_key =
+        kong.db.oauth2_credentials:cache_key(token.credential.id)
+
+      local credential, err = kong.cache:get(credential_cache_key, nil,
+                                             load_oauth2_credential_into_memory,
+                                             token.credential.id)
+      if err then
+        return error(err)
+      end
+
+      -- Retrieve the consumer from the credential
+      local consumer_cache_key, consumer
+      consumer_cache_key = kong.db.consumers:cache_key(credential.consumer.id)
+      consumer, err      = kong.cache:get(consumer_cache_key, nil,
+                                          kong.client.load_consumer,
+                                          credential.consumer.id)
+      if err then
+        return error(err)
+      end
+
+      set_consumer(consumer, credential, token)
+
+      return true
+    end
+
+- id: kong_rate_limiting
+  task_description: "Отклонять запрос с кодом 429, если клиент превысил лимит в секунду/минуту/час/день (ключ — IP, consumer, credential, сервис, заголовок или путь)."
+  category: rate_limiting
+  complexity: hard
+  reference_code: |
+    -- Kong plugin: rate-limiting, function: RateLimitingHandler:access (handler.lua)
+    function RateLimitingHandler:access(conf)
+      local current_timestamp = time() * 1000
+
+      -- Consumer is identified by ip address or authenticated_credential id
+      local identifier = get_identifier(conf)
+      local fault_tolerant = conf.fault_tolerant
+
+      -- Load current metric for configured period
+      local limits = {
+        second = conf.second,
+        minute = conf.minute,
+        hour = conf.hour,
+        day = conf.day,
+        month = conf.month,
+        year = conf.year,
+      }
+
+      local usage, stop, err = get_usage(conf, identifier, current_timestamp, limits)
+      if err then
+        if not fault_tolerant then
+          return error(err)
+        end
+
+        kong.log.err("failed to get usage: ", tostring(err))
+      end
+
+      if usage then
+        local ngx_ctx = ngx.ctx
+        local reset
+        if not conf.hide_client_headers then
+          local timestamps
+          local limit
+          local window
+          local remaining
+          for k, v in pairs(usage) do
+            local current_limit = v.limit
+            local current_window = EXPIRATION[k]
+            local current_remaining = v.remaining
+            if stop == nil or stop == k then
+              current_remaining = current_remaining - 1
+            end
+            current_remaining = max(0, current_remaining)
+
+            if not limit or (current_remaining < remaining)
+                         or (current_remaining == remaining and
+                             current_window > window)
+            then
+              limit = current_limit
+              window = current_window
+              remaining = current_remaining
+
+              if not timestamps then
+                timestamps = timestamp.get_timestamps(current_timestamp)
+              end
+
+              reset = max(1, window - floor((current_timestamp - timestamps[k]) / 1000))
+            end
+
+            pdk_rl_store_response_header(ngx_ctx, X_RATELIMIT_LIMIT[k], current_limit)
+            pdk_rl_store_response_header(ngx_ctx, X_RATELIMIT_REMAINING[k], current_remaining)
+          end
+
+          pdk_rl_store_response_header(ngx_ctx, RATELIMIT_LIMIT, limit)
+          pdk_rl_store_response_header(ngx_ctx, RATELIMIT_REMAINING, remaining)
+          pdk_rl_store_response_header(ngx_ctx, RATELIMIT_RESET, reset)
+        end
+
+        -- If limit is exceeded, terminate the request
+        if stop then
+          if not conf.hide_client_headers then
+            pdk_rl_store_response_header(ngx_ctx, RETRY_AFTER, reset)
+            pdk_rl_apply_response_headers(ngx_ctx)
+          end
+
+          return kong.response.error(conf.error_code, conf.error_message)
+        end
+
+        if not conf.hide_client_headers then
+          pdk_rl_apply_response_headers(ngx_ctx)
+        end
+      end
+
+      if conf.sync_rate ~= SYNC_RATE_REALTIME and conf.policy == "redis" then
+        increment(false, conf, limits, identifier, current_timestamp, 1)
+
+      else
+        local ok, err = timer_at(0, increment, conf, limits, identifier, current_timestamp, 1)
+        if not ok then
+          kong.log.err("failed to create timer: ", err)
+        end
+      end
+    end
+
+- id: kong_acl
+  task_description: "Проверить группу аутентифицированного consumer по спискам allow/deny и вернуть 401/403, если доступ запрещён, либо прокинуть заголовок с группами."
+  category: auth
+  complexity: hard
+  reference_code: |
+    -- Kong plugin: acl, function: ACLHandler:access (handler.lua)
+    function ACLHandler:access(conf)
+      -- simplify our plugins 'conf' table
+      local config = config_cache[conf]
+      if not config then
+        local config_type = (conf.deny or EMPTY)[1] and DENY or ALLOW
+
+        config = {
+          hide_groups_header = conf.hide_groups_header,
+          type = config_type,
+          groups = config_type == DENY and conf.deny or conf.allow,
+          cache = setmetatable({}, mt_cache),
+        }
+
+        config_cache[conf] = config
+      end
+
+      local to_be_blocked
+
+      -- get the consumer/credentials
+      local consumer_id = groups.get_current_consumer_id()
+      if not consumer_id then
+        local authenticated_groups = groups.get_authenticated_groups()
+        if not authenticated_groups then
+          if kong.client.get_credential() then
+            return kong.response.error(403, "You cannot consume this service")
+          end
+
+          return kong.response.error(401)
+        end
+
+        local in_group = groups.group_in_groups(config.groups, authenticated_groups)
+        to_be_blocked = get_to_be_blocked(config, authenticated_groups, in_group)
+
+      else
+        local credential = kong.client.get_credential()
+        local authenticated_groups
+        if (not credential) or conf.always_use_authenticated_groups then
+          -- authenticated groups overrides anonymous groups
+          authenticated_groups = groups.get_authenticated_groups()
+        end
+
+        if authenticated_groups then
+          consumer_id = nil
+
+          local in_group = groups.group_in_groups(config.groups, authenticated_groups)
+          to_be_blocked = get_to_be_blocked(config, authenticated_groups, in_group)
+
+        else
+          -- get the consumer groups, since we need those as cache-keys to make sure
+          -- we invalidate properly if they change
+          local consumer_groups, err = groups.get_consumer_groups(consumer_id)
+           if err then
+            return error(err)
+          end
+
+          if not consumer_groups then
+            if config.type == DENY then
+              consumer_groups = EMPTY
+
+            else
+              if credential then
+                return kong.response.error(403, "You cannot consume this service")
+              end
+
+              return kong.response.error(401)
+            end
+          end
+
+          -- 'to_be_blocked' is either 'true' if it's to be blocked, or the header
+          -- value if it is to be passed
+          to_be_blocked = config.cache[consumer_groups]
+          if to_be_blocked == nil then
+            local in_group = groups.consumer_in_groups(config.groups, consumer_groups)
+            to_be_blocked = get_to_be_blocked(config, consumer_groups, in_group)
+
+            -- update cache
+            config.cache[consumer_groups] = to_be_blocked
+          end
+        end
+      end
+
+      if to_be_blocked == true then -- NOTE: we only catch the boolean here!
+        return kong.response.error(403, "You cannot consume this service")
+      end
+
+      if not conf.hide_groups_header and to_be_blocked then
+        kong.service.request.set_header(consumer_id and
+                                        constants.HEADERS.CONSUMER_GROUPS or
+                                        constants.HEADERS.AUTHENTICATED_GROUPS,
+                                        to_be_blocked)
+      end
+    end

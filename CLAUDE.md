@@ -11,7 +11,7 @@
 
 ## Параметры в `app/core/config.py`
 
-- `planner_max_tokens`, `coder_max_tokens`, `fixer_max_tokens` — **все ≤256**. OpenAI-совместимый API параметр `max_tokens` перекрывает `num_predict` из Modelfile, поэтому оба должны быть согласованы.
+- `planner_max_tokens`, `lua_node_max_tokens`, `fixer_max_tokens` — **все ≤256**. OpenAI-совместимый API параметр `max_tokens` перекрывает `num_predict` из Modelfile, поэтому оба должны быть согласованы.
 - Если в коде или `.env` видишь значение `>256` для любого `*_max_tokens` — это баг, откатывать.
 
 ## Железо

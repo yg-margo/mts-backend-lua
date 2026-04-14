@@ -8,6 +8,7 @@ import {
   applyEdgeChanges,
   type NodeChange,
   type EdgeChange,
+  type Connection,
   type Node,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
@@ -16,11 +17,22 @@ import { useFlow, type AppNode } from "@/store/flowStore";
 import { InputNode } from "./nodes/InputNode";
 import { LuaNode } from "./nodes/LuaNode";
 import { OutputNode } from "./nodes/OutputNode";
+import { PromptNode } from "./nodes/PromptNode";
+import { ExampleNode } from "./nodes/ExampleNode";
+import { HintNode } from "./nodes/HintNode";
+import { CoderNode } from "./nodes/CoderNode";
+import { ResultNode } from "./nodes/ResultNode";
+import { NodePalette } from "./NodePalette";
 
 const nodeTypes = {
   input: InputNode,
   lua: LuaNode,
   output: OutputNode,
+  prompt: PromptNode,
+  example: ExampleNode,
+  hint: HintNode,
+  coder: CoderNode,
+  result: ResultNode,
 } as const;
 
 export function FlowPanel() {
@@ -29,6 +41,7 @@ export function FlowPanel() {
   const setNodes = useFlow((s) => s.setNodes);
   const setEdges = useFlow((s) => s.setEdges);
   const selectNode = useFlow((s) => s.selectNode);
+  const onConnect = useFlow((s) => s.onConnect);
 
   const onNodesChange = useCallback(
     (changes: NodeChange[]) => {
@@ -43,9 +56,14 @@ export function FlowPanel() {
     [edges, setEdges]
   );
 
+  const handleConnect = useCallback(
+    (c: Connection) => onConnect(c),
+    [onConnect]
+  );
+
   const onNodeClick = useCallback(
     (_: unknown, node: Node) => {
-      if (node.type === "lua") selectNode(node.id);
+      selectNode(node.id);
     },
     [selectNode]
   );
@@ -61,17 +79,19 @@ export function FlowPanel() {
         <div>
           <div className="text-sm font-semibold text-mts-ink">Flow</div>
           <div className="text-[11px] text-mts-muted">
-            один узел Lua → Output
+            конструктор контекста LLM · tree-sitter packing
           </div>
         </div>
       </div>
 
-      <div className="flex-1">
+      <div className="relative flex-1">
+        <NodePalette />
         <ReactFlow
           nodes={nodes}
           edges={edges}
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
+          onConnect={handleConnect}
           onNodeClick={onNodeClick}
           nodeTypes={types}
           fitView
@@ -81,6 +101,7 @@ export function FlowPanel() {
             animated: true,
             style: { stroke: "#CBD5E1", strokeWidth: 1.5 },
           }}
+          deleteKeyCode={["Backspace", "Delete"]}
         >
           <Background
             variant={BackgroundVariant.Dots}

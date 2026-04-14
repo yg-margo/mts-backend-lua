@@ -1,15 +1,38 @@
+import { useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
-import { Copy, AlertCircle, Sparkles, User } from "lucide-react";
+import {
+  AlertCircle,
+  CheckCircle2,
+  Copy,
+  HelpCircle,
+  Loader2,
+  Send,
+  Sparkles,
+  User,
+} from "lucide-react";
 import { cn } from "@/lib/cn";
 import { Button } from "@/components/ui/button";
-import type { ChatMessage } from "@/store/chatStore";
+import type { ChatMessage, ClarificationState } from "@/store/chatStore";
+
+export interface ApplyCodePayload {
+  code: string;
+  inputs?: Record<string, unknown>;
+  entryPoint?: { name: string; params: string[] };
+}
 
 interface MessageProps {
   message: ChatMessage;
-  onInsertCode?: (code: string) => void;
+  onInsertCode?: (payload: ApplyCodePayload) => void;
+  onSubmitClarification?: (messageId: string, answers: string[]) => void;
+  clarificationDisabled?: boolean;
 }
 
-export function Message({ message, onInsertCode }: MessageProps) {
+export function Message({
+  message,
+  onInsertCode,
+  onSubmitClarification,
+  clarificationDisabled,
+}: MessageProps) {
   const isUser = message.role === "user";
   const isError = message.role === "error";
 
@@ -50,11 +73,30 @@ export function Message({ message, onInsertCode }: MessageProps) {
       >
         <div className="whitespace-pre-wrap leading-relaxed">{message.content}</div>
 
+        {message.clarification && onSubmitClarification && (
+          <ClarificationBlock
+            clarification={message.clarification}
+            disabled={!!clarificationDisabled}
+            onSubmit={(answers) =>
+              onSubmitClarification(message.id, answers)
+            }
+          />
+        )}
+
         {message.code && (
           <CodeBlock
             code={message.code}
             label="Lua"
-            onInsertCode={onInsertCode}
+            onInsertCode={
+              onInsertCode
+                ? () =>
+                    onInsertCode({
+                      code: message.code!,
+                      inputs: message.inputs,
+                      entryPoint: message.entryPoint,
+                    })
+                : undefined
+            }
           />
         )}
 
@@ -63,7 +105,11 @@ export function Message({ message, onInsertCode }: MessageProps) {
             code={message.partialCode}
             label="partial"
             tone="error"
-            onInsertCode={onInsertCode}
+            onInsertCode={
+              onInsertCode
+                ? () => onInsertCode({ code: message.partialCode! })
+                : undefined
+            }
           />
         )}
 
@@ -72,6 +118,131 @@ export function Message({ message, onInsertCode }: MessageProps) {
         )}
       </div>
     </motion.div>
+  );
+}
+
+function ClarificationBlock({
+  clarification,
+  disabled,
+  onSubmit,
+}: {
+  clarification: ClarificationState;
+  disabled: boolean;
+  onSubmit: (answers: string[]) => void;
+}) {
+  const [values, setValues] = useState<string[]>(() =>
+    clarification.questions.map(() => "")
+  );
+  const inputRefs = useRef<Array<HTMLInputElement | null>>([]);
+
+  // Autofocus the first input once when the form first renders in pending state.
+  const firstRenderRef = useRef(true);
+  useEffect(() => {
+    if (clarification.status !== "pending") return;
+    if (!firstRenderRef.current) return;
+    firstRenderRef.current = false;
+    inputRefs.current[0]?.focus();
+  }, [clarification.status]);
+
+  if (clarification.status === "expired") {
+    return (
+      <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-800">
+        Сессия уточнений истекла. Отправь запрос заново.
+      </div>
+    );
+  }
+
+  if (clarification.status === "answered") {
+    const answers = clarification.answers ?? [];
+    return (
+      <div className="mt-3 overflow-hidden rounded-xl border border-mts-border bg-mts-surface">
+        {clarification.questions.map((q, i) => (
+          <div
+            key={i}
+            className={cn(
+              "flex items-start gap-2 px-3 py-2 text-[12px]",
+              i > 0 && "border-t border-mts-border/60"
+            )}
+          >
+            <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-500" />
+            <div className="flex-1 min-w-0">
+              <div className="text-mts-muted leading-snug">{q}</div>
+              <div className="mt-0.5 break-words text-mts-ink">
+                {answers[i] || <span className="italic opacity-60">—</span>}
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  // pending
+  const allFilled = values.every((v) => v.trim().length > 0);
+
+  const submit = () => {
+    if (!allFilled || disabled) return;
+    onSubmit(values.map((v) => v.trim()));
+  };
+
+  const onKeyDown =
+    (i: number) => (e: React.KeyboardEvent<HTMLInputElement>) => {
+      if (e.key !== "Enter") return;
+      e.preventDefault();
+      const next = inputRefs.current[i + 1];
+      if (next) {
+        next.focus();
+      } else {
+        submit();
+      }
+    };
+
+  return (
+    <div className="mt-3 overflow-hidden rounded-xl border border-mts-border bg-white">
+      <div className="flex items-center gap-1.5 border-b border-mts-border bg-mts-surface px-3 py-1.5 text-[11px] uppercase tracking-wide text-mts-muted">
+        <HelpCircle className="h-3 w-3 text-mts-red" />
+        <span className="font-medium">Нужно уточнить</span>
+      </div>
+      <div className="space-y-2.5 p-3">
+        {clarification.questions.map((q, i) => (
+          <div key={i} className="space-y-1">
+            <label className="block text-[12px] font-medium leading-snug text-mts-ink">
+              <span className="mr-1.5 text-mts-red">{i + 1}.</span>
+              {q}
+            </label>
+            <input
+              ref={(el) => {
+                inputRefs.current[i] = el;
+              }}
+              type="text"
+              value={values[i]}
+              onChange={(e) => {
+                const next = [...values];
+                next[i] = e.target.value;
+                setValues(next);
+              }}
+              onKeyDown={onKeyDown(i)}
+              placeholder="Твой ответ…"
+              disabled={disabled}
+              className="w-full rounded-lg border border-mts-border bg-white px-2.5 py-1.5 text-[12px] text-mts-ink placeholder:text-mts-muted/70 focus:border-mts-red/50 focus:outline-none focus:ring-2 focus:ring-mts-red/20 disabled:opacity-60"
+            />
+          </div>
+        ))}
+        <Button
+          onClick={submit}
+          disabled={!allFilled || disabled}
+          size="sm"
+          className="h-8 w-full rounded-lg"
+        >
+          {disabled ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <Send className="h-3.5 w-3.5" />
+          )}
+          Уточнить
+        </Button>
+      </div>
+    </div>
   );
 }
 
@@ -84,7 +255,7 @@ function CodeBlock({
   code: string;
   label: string;
   tone?: "default" | "error";
-  onInsertCode?: (code: string) => void;
+  onInsertCode?: () => void;
 }) {
   return (
     <div
@@ -117,7 +288,7 @@ function CodeBlock({
               variant="default"
               size="sm"
               className="h-6 px-2 text-[11px]"
-              onClick={() => onInsertCode(code)}
+              onClick={onInsertCode}
             >
               Use in node
             </Button>

@@ -17,7 +17,17 @@ export function LuaNode({ id, data, selected }: NodeProps & { data: LuaNodeData 
     const input = inp ? parseInput(inp.data.value) : undefined;
     setNodeRunning(id, true);
     if (out) writeOutput(out.id, { stdout: [], error: undefined });
-    const result = await runLua(data.code, { input });
+
+    // If we know the generated entry-point, auto-invoke it with input.<param>
+    // values. Wrap user code in an IIFE so a top-level `return` in it doesn't
+    // make the trailing print(...) syntactically unreachable.
+    let codeToRun = data.code;
+    if (data.entry?.name) {
+      const argList = data.entry.params.map((p) => `input.${p}`).join(", ");
+      codeToRun = `(function()\n${data.code}\nend)()\nprint(${data.entry.name}(${argList}))`;
+    }
+
+    const result = await runLua(codeToRun, { input });
     if (out)
       writeOutput(out.id, {
         stdout: result.stdout,

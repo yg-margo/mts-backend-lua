@@ -1,10 +1,10 @@
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import { motion } from "framer-motion";
-import { Terminal, AlertCircle, Clock } from "lucide-react";
+import { Terminal, Clock } from "lucide-react";
 import type { OutputNodeData } from "@/store/flowStore";
+import { OutputView } from "@/components/output/OutputView";
 
 export function OutputNode({ data, selected }: NodeProps & { data: OutputNodeData }) {
-  const hasLines = data.stdout.length > 0;
   return (
     <motion.div
       initial={{ opacity: 0, scale: 0.96 }}
@@ -35,29 +35,12 @@ export function OutputNode({ data, selected }: NodeProps & { data: OutputNodeDat
         )}
       </div>
 
-      <div className="px-3 py-2 text-[11px] leading-[1.5] font-mono max-h-[180px] overflow-auto scrollbar-thin">
-        {data.error ? (
-          <div className="flex items-start gap-2 text-red-300">
-            <AlertCircle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
-            <span className="whitespace-pre-wrap break-words">{data.error}</span>
-          </div>
-        ) : hasLines ? (
-          <div className="space-y-0.5">
-            {data.stdout.map((line, i) => (
-              <div key={i} className="whitespace-pre-wrap break-words">
-                <span className="text-white/30 select-none pr-2">
-                  {String(i + 1).padStart(2, " ")}
-                </span>
-                {line}
-              </div>
-            ))}
-          </div>
-        ) : (
-          <div className="text-white/40 italic">
-            нет вывода · нажми Run на ноде слева
-          </div>
-        )}
-      </div>
+      <OutputView
+        stdout={data.stdout}
+        error={data.error}
+        emptyHint="нет вывода · нажми Run на ноде слева"
+        className="px-3 py-2 max-h-[180px] overflow-auto scrollbar-thin"
+      />
     </motion.div>
   );
 }

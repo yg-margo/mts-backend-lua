@@ -1,9 +1,16 @@
 import Editor, { type OnMount } from "@monaco-editor/react";
 import { useFlow, parseInput } from "@/store/flowStore";
 import { Button } from "@/components/ui/button";
-import { FileCode2, Play, Loader2 } from "lucide-react";
+import { FileCode2, Play, Loader2, Terminal, Clock } from "lucide-react";
 import { runLua } from "@/lib/lua";
-import { useRef } from "react";
+import { useRef, useState } from "react";
+import { OutputView } from "@/components/output/OutputView";
+
+interface LocalRunResult {
+  stdout: string[];
+  error?: string;
+  durationMs?: number;
+}
 
 export function EditorPanel() {
   const selectedNodeId = useFlow((s) => s.selectedNodeId);
@@ -15,6 +22,7 @@ export function EditorPanel() {
   const getInputNode = useFlow((s) => s.getInputNode);
 
   const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
+  const [localResult, setLocalResult] = useState<LocalRunResult | null>(null);
 
   const luaNode = nodes.find(
     (n): n is Extract<typeof n, { type: "lua" }> =>
@@ -34,8 +42,22 @@ export function EditorPanel() {
     const inp = getInputNode();
     const input = inp ? parseInput(inp.data.value) : undefined;
     setNodeRunning(luaNode.id, true);
+    setLocalResult(null);
     if (out) writeOutput(out.id, { stdout: [], error: undefined });
-    const result = await runLua(code, { input });
+
+    let codeToRun = code;
+    const entry = luaNode.data.entry;
+    if (entry?.name) {
+      const argList = entry.params.map((p) => `input.${p}`).join(", ");
+      codeToRun = `(function()\n${code}\nend)()\nprint(${entry.name}(${argList}))`;
+    }
+
+    const result = await runLua(codeToRun, { input });
+    setLocalResult({
+      stdout: result.stdout,
+      error: result.error,
+      durationMs: result.durationMs,
+    });
     if (out) {
       writeOutput(out.id, {
         stdout: result.stdout,
@@ -102,7 +124,7 @@ export function EditorPanel() {
         </Button>
       </div>
 
-      <div className="relative flex-1">
+      <div className="relative min-h-0 flex-1">
         {luaNode ? (
           <Editor
             value={code}
@@ -140,6 +162,38 @@ export function EditorPanel() {
           </div>
         )}
       </div>
+
+      {luaNode && (
+        <div className="flex max-h-[40%] min-h-[110px] shrink-0 flex-col border-t border-mts-border bg-mts-ink text-white">
+          <div className="flex items-center justify-between border-b border-white/10 px-3 py-1.5">
+            <div className="flex items-center gap-2">
+              <div className="flex h-5 w-5 items-center justify-center rounded-md bg-white/10">
+                <Terminal className="h-3 w-3" />
+              </div>
+              <span className="text-[11px] font-semibold uppercase tracking-wide">
+                Output
+              </span>
+              {isRunning && (
+                <Loader2 className="h-3 w-3 animate-spin text-white/60" />
+              )}
+            </div>
+            {typeof localResult?.durationMs === "number" && (
+              <span className="flex items-center gap-1 text-[10px] text-white/60">
+                <Clock className="h-3 w-3" />
+                {localResult.durationMs}ms
+              </span>
+            )}
+          </div>
+          <OutputView
+            stdout={localResult?.stdout ?? []}
+            error={localResult?.error}
+            emptyHint={
+              isRunning ? "выполняется…" : "нет вывода · нажми Run"
+            }
+            className="flex-1 overflow-auto scrollbar-thin px-3 py-2"
+          />
+        </div>
+      )}
     </div>
   );
 }
