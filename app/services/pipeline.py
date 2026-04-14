@@ -5,6 +5,7 @@ pipeline.py — оркестратор: Planner → Searcher → Coder → Valid
 from __future__ import annotations
 import logging
 import re
+import html
 
 from app.core.config import settings
 from app.services.llm_client import chat, chat_json
@@ -75,9 +76,13 @@ async def run_fixer(code_block: str, error: str) -> str:
 
 
 def _strip_fences(text: str) -> str:
-    text = re.sub(r'<[^>]*>', '', text)
+    text = html.unescape(text)
 
-    text = re.sub(r'"{1,2}(kw|cmt|str|num|fn|op|tag)"?\s*>?\s*', '', text)
+    text = re.sub(r'<[^>]*>', '', text, flags=re.DOTALL)
+
+    syntax_classes = r'(?:kw|cmt|str|num|fn|op|tag|keyword|comment|string|number|function|operator)'
+    tag_remover = rf'(?:class\s*=\s*)?["\u201C\u201D\u2018\u2019]?\s*{syntax_classes}\s*["\u201C\u201D\u2018\u2019]?\s*>'
+    text = re.sub(tag_remover, '', text, flags=re.IGNORECASE)
 
     text = re.sub(r"^```(?:lua)?\s*\n?", "", text.strip(), flags=re.IGNORECASE)
     text = re.sub(r"\n?```$", "", text.strip())
