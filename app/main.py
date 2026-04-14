@@ -9,6 +9,7 @@ OpenAPI JSON→  http://localhost:8080/openapi.json
 """
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pathlib import Path
 from app.api.routes import router
@@ -38,6 +39,16 @@ app = FastAPI(
         }
     ],
     servers=[{"url": "http://localhost:8080", "description": "Local dev"}],
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ],
+    allow_methods=["POST", "GET", "OPTIONS"],
+    allow_headers=["*"],
 )
 
 app.include_router(router)

@@ -33,17 +33,38 @@ async def run_planner(user_prompt: str) -> Plan:
             ],
             max_tokens=settings.planner_max_tokens,
         )
-        if isinstance(raw, list):
-            return Plan(steps=raw)
-        return Plan(**raw)
+
+        steps_raw = raw if isinstance(raw, list) else raw.get("steps", [])
+
+        normalized: list[str] = []
+        for item in steps_raw:
+            if isinstance(item, str):
+                text = item
+            elif isinstance(item, dict):
+                text = next(
+                    (item[k] for k in ("step", "description", "text", "content", "task")
+                     if isinstance(item.get(k), str)),
+                    "",
+                )
+                if not text:
+                    text = " ".join(str(v) for v in item.values() if isinstance(v, str))
+            else:
+                text = str(item)
+
+            text = text.strip()
+            if text:
+                normalized.append(text)
+
+        if not normalized:
+            raise ValueError("empty plan after normalization")
+
+        return Plan(steps=normalized)
     except Exception as e:
         log.warning("Planner failed: %s. Fallback to 1 step.", e)
-        # Если JSON сломался — делаем один шаг из всего промпта
         return Plan(steps=[user_prompt])
 
 
 def run_searcher(step: str) -> str:
-    # Берем ключевые слова из шага для RAG
     keywords = step.split()[:5]
     return search_snippets(keywords, top_k=2)
 
@@ -76,27 +97,20 @@ async def run_fixer(code_block: str, error: str) -> str:
 
 
 def _strip_fences(text: str) -> str:
-    text = html.unescape(text)
-
-    text = re.sub(r'<[^>]*>', '', text, flags=re.DOTALL)
-
-    syntax_classes = r'(?:kw|cmt|str|num|fn|op|tag|keyword|comment|string|number|function|operator)'
-    tag_remover = rf'(?:class\s*=\s*)?["\u201C\u201D\u2018\u2019]?\s*{syntax_classes}\s*["\u201C\u201D\u2018\u2019]?\s*>'
-    text = re.sub(tag_remover, '', text, flags=re.IGNORECASE)
-
-    text = re.sub(r"^```(?:lua)?\s*\n?", "", text.strip(), flags=re.IGNORECASE)
-    text = re.sub(r"\n?```$", "", text.strip())
-
-    lua_start = re.search(
-        r"(?i)^(.*?)(?=\bfunction\b|\blocal\b|\breturn\b|\bif\b|\bfor\b|\bwhile\b|--)",
-        text
-    )
-    if lua_start and lua_start.lastindex and lua_start.lastindex >= 2:
-        text = text[lua_start.start(2):]
-
-    text = re.sub(r'^[^a-zA-Z0-9_-]+', '', text)
-
+    text = text.strip()
+    text = re.sub(r"^```(?:lua)?\s*\n?", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\n?```$", "", text)
     return text.strip()
+
+def _format_multistep_task(user_prompt: str, steps: list[str]) -> str:
+    numbered = "\n".join(f"{i+1}. {s}" for i, s in enumerate(steps))
+    return (
+        f"{user_prompt}\n\n"
+        f"Implement as ONE coherent Lua script (single file, no duplicate "
+        f"functions, no top-level returns between functions). "
+        f"Sub-tasks to cover:\n{numbered}"
+    )
+
 
 def _merge_steps(step_codes: list[tuple[str, str]]) -> str:
     return "\n\n".join([code for step, code in step_codes])
@@ -106,14 +120,17 @@ async def generate_code(user_prompt: str) -> str:
     plan = await run_planner(user_prompt)
     log.info("Plan has %d steps", len(plan.steps))
 
-    step_codes: list[tuple[str, str]] = []
-    for step in plan.steps:
+    if len(plan.steps) == 1:
+        step = plan.steps[0]
         log.info("Step: %s", step)
         snippet = run_searcher(step)
-        code = await run_coder(step, snippet)
-        step_codes.append((step, code))
+        full_code = await run_coder(step, snippet)
+    else:
+        combined_task = _format_multistep_task(user_prompt, plan.steps)
+        log.info("Multi-step task (%d steps) merged into single coder call", len(plan.steps))
+        snippet = run_searcher(user_prompt)
+        full_code = await run_coder(combined_task, snippet)
 
-    full_code = _merge_steps(step_codes)
     full_code = await _fix_loop(full_code)
 
     return full_code
@@ -130,12 +147,13 @@ async def _fix_loop(full_code: str) -> str:
 
         err: ErrorDetail = result.errors[0]
         block_to_fix = err.code_block
-        fixed_block = await run_fixer(block_to_fix, err.message)
 
-        if block_to_fix in full_code:
+        occurrences = full_code.count(block_to_fix) if block_to_fix else 0
+        if occurrences == 1:
+            fixed_block = await run_fixer(block_to_fix, err.message)
             full_code = full_code.replace(block_to_fix, fixed_block, 1)
         else:
-            full_code = fixed_block
+            full_code = await run_fixer(full_code, err.message)
 
     result = validate(full_code)
     if result.success:

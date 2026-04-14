@@ -1,0 +1,13 @@
+node_modules/
+dist/
+*.tsbuildinfo
+
+# tsc emit shadows .tsx — vite compiles from source directly
+src/**/*.js
+
+.env
+.env.local
+.env.*.local
+
+.DS_Store
+*.log
