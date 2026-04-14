@@ -3,14 +3,8 @@ import { useFlow, parseInput } from "@/store/flowStore";
 import { Button } from "@/components/ui/button";
 import { FileCode2, Play, Loader2, Terminal, Clock } from "lucide-react";
 import { runLua } from "@/lib/lua";
-import { useRef, useState } from "react";
+import { useRef } from "react";
 import { OutputView } from "@/components/output/OutputView";
-
-interface LocalRunResult {
-  stdout: string[];
-  error?: string;
-  durationMs?: number;
-}
 
 export function EditorPanel() {
   const selectedNodeId = useFlow((s) => s.selectedNodeId);
@@ -22,11 +16,13 @@ export function EditorPanel() {
   const getInputNode = useFlow((s) => s.getInputNode);
 
   const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
-  const [localResult, setLocalResult] = useState<LocalRunResult | null>(null);
 
   const luaNode = nodes.find(
     (n): n is Extract<typeof n, { type: "lua" }> =>
       n.id === selectedNodeId && n.type === "lua"
+  );
+  const outputNode = nodes.find(
+    (n): n is Extract<typeof n, { type: "output" }> => n.type === "output"
   );
   const code = luaNode?.data.code ?? "";
   const isRunning = !!luaNode?.data.isRunning;
@@ -42,7 +38,6 @@ export function EditorPanel() {
     const inp = getInputNode();
     const input = inp ? parseInput(inp.data.value) : undefined;
     setNodeRunning(luaNode.id, true);
-    setLocalResult(null);
     if (out) writeOutput(out.id, { stdout: [], error: undefined });
 
     let codeToRun = code;
@@ -53,11 +48,6 @@ export function EditorPanel() {
     }
 
     const result = await runLua(codeToRun, { input });
-    setLocalResult({
-      stdout: result.stdout,
-      error: result.error,
-      durationMs: result.durationMs,
-    });
     if (out) {
       writeOutput(out.id, {
         stdout: result.stdout,
@@ -177,16 +167,16 @@ export function EditorPanel() {
                 <Loader2 className="h-3 w-3 animate-spin text-white/60" />
               )}
             </div>
-            {typeof localResult?.durationMs === "number" && (
+            {typeof outputNode?.data.durationMs === "number" && (
               <span className="flex items-center gap-1 text-[10px] text-white/60">
                 <Clock className="h-3 w-3" />
-                {localResult.durationMs}ms
+                {outputNode.data.durationMs}ms
               </span>
             )}
           </div>
           <OutputView
-            stdout={localResult?.stdout ?? []}
-            error={localResult?.error}
+            stdout={outputNode?.data.stdout ?? []}
+            error={outputNode?.data.error}
             emptyHint={
               isRunning ? "выполняется…" : "нет вывода · нажми Run"
             }

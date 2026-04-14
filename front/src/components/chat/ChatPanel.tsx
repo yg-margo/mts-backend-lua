@@ -12,8 +12,16 @@ import { MessageSquare, Eraser } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 export function ChatPanel() {
-  const { messages, isGenerating, append, update, setGenerating, clear } =
-    useChat();
+  const {
+    messages,
+    isGenerating,
+    chatSessionId,
+    append,
+    update,
+    setGenerating,
+    setChatSessionId,
+    clear,
+  } = useChat();
   const setNodeCode = useFlow((s) => s.setNodeCode);
   const setNodeEntry = useFlow((s) => s.setNodeEntry);
   const setInputValue = useFlow((s) => s.setInputValue);
@@ -148,14 +156,17 @@ export function ChatPanel() {
           });
           break;
         case "clarification":
+          if (ev.chat_session_id) setChatSessionId(ev.chat_session_id);
           onClarifyResult({
             ok: "clarify",
             sessionId: ev.session_id,
             questions: ev.questions,
+            chatSessionId: ev.chat_session_id ?? null,
           });
           finish();
           break;
         case "done":
+          if (ev.chat_session_id) setChatSessionId(ev.chat_session_id);
           onCodeResult({
             ok: "code",
             code: ev.code,
@@ -166,6 +177,7 @@ export function ChatPanel() {
                   params: ev.entry_point.params,
                 }
               : null,
+            chatSessionId: ev.chat_session_id ?? null,
           });
           finish();
           break;
@@ -220,7 +232,10 @@ export function ChatPanel() {
   const onSubmit = (prompt: string) => {
     append({ role: "user", content: prompt });
     runStream(
-      { prompt },
+      {
+        prompt,
+        ...(chatSessionId ? { chat_session_id: chatSessionId } : {}),
+      },
       handleGenerateResult,
       handleGenerateResult,
       handleGenerateResult
@@ -235,7 +250,11 @@ export function ChatPanel() {
     const clarification = msg.clarification;
 
     runStream(
-      { session_id: sessionId, answers },
+      {
+        session_id: sessionId,
+        answers,
+        ...(chatSessionId ? { chat_session_id: chatSessionId } : {}),
+      },
       handleGenerateResult,
       (result) => {
         update(messageId, {

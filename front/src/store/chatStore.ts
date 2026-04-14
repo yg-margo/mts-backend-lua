@@ -29,15 +29,18 @@ export type ChatMessagePatch = Partial<Omit<ChatMessage, "id" | "createdAt">>;
 interface ChatState {
   messages: ChatMessage[];
   isGenerating: boolean;
+  chatSessionId: string | null;
   append: (m: Omit<ChatMessage, "id" | "createdAt">) => ChatMessage;
   update: (id: string, patch: ChatMessagePatch) => void;
   setGenerating: (v: boolean) => void;
+  setChatSessionId: (id: string | null) => void;
   clear: () => void;
 }
 
 export const useChat = create<ChatState>((set) => ({
   messages: [],
   isGenerating: false,
+  chatSessionId: null,
   append: (m) => {
     const full: ChatMessage = {
       ...m,
@@ -52,7 +55,8 @@ export const useChat = create<ChatState>((set) => ({
       messages: s.messages.map((m) => (m.id === id ? { ...m, ...patch } : m)),
     })),
   setGenerating: (v) => set({ isGenerating: v }),
-  clear: () => set({ messages: [] }),
+  setChatSessionId: (id) => set({ chatSessionId: id }),
+  clear: () => set({ messages: [], chatSessionId: null }),
 }));
 
 export const hasPendingClarification = (messages: ChatMessage[]): boolean =>

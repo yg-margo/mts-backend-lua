@@ -16,6 +16,7 @@ class GenerateRequest(BaseModel):
     prompt: Optional[str] = None
     session_id: Optional[str] = None
     answers: Optional[list[str]] = None
+    chat_session_id: Optional[str] = None
 
     @model_validator(mode="after")
     def _exactly_one_branch(self) -> "GenerateRequest":
@@ -39,6 +40,7 @@ class GenerateResponse(BaseModel):
     inputs: Optional[dict[str, Any]] = None
     entry_point: Optional[EntryPoint] = None
     clarification: Optional[ClarificationPayload] = None
+    chat_session_id: Optional[str] = None
 
 
 class Plan(BaseModel):

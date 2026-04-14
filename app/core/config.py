@@ -23,6 +23,7 @@ class Settings(BaseSettings):
 
     max_fix_cycles: int = 1
     clarification_session_ttl: int = 1800
+    chat_session_ttl: int = 3600
 
     docs_path: str = "docs/lua_examples.txt"
 

@@ -23,13 +23,16 @@ Emit = Callable[[dict], Awaitable[None]] | None
 from app.services.prompts import (
     CLARIFIER_SYSTEM,
     LUA_NODE_SYSTEM,
+    LUA_NODE_EDIT_SYSTEM,
     FIXER_SYSTEM,
     PLANNER_SYSTEM,
     clarifier_user,
     lua_node_user,
+    lua_node_edit_user,
     fixer_user,
     planner_user,
 )
+from app.services.chat_sessions import is_edit_intent, truncate_code_for_context
 from app.services.chunker import PackResult, chunk_lua, pack_chunks
 from app.services.input_extractor import extract_entry_point, extract_inputs
 from app.services.rag import search_snippets
@@ -176,6 +179,47 @@ async def run_lua_node(
     return code
 
 
+async def run_lua_node_edit(
+    edit_request: str,
+    previous_code: str,
+    emit: Emit = None,
+) -> str:
+    """Одноходовая правка существующего Lua-артефакта.
+
+    Один LLM-вызов, ≤ lua_node_max_tokens (=256) output-токенов. Planner и
+    searcher намеренно пропускаем: RAG-сниппеты конкурировали бы за input-токены
+    с previous_code, а сам previous_code уже содержит всё необходимое для
+    локальной правки.
+    """
+    messages = [
+        {"role": "system", "content": LUA_NODE_EDIT_SYSTEM},
+        {
+            "role": "user",
+            "content": lua_node_edit_user(
+                edit_request, truncate_code_for_context(previous_code)
+            ),
+        },
+    ]
+    if emit is None:
+        code = await chat(messages=messages, max_tokens=settings.lua_node_max_tokens)
+    else:
+        async def on_token(t: str) -> None:
+            await emit({"type": "token", "stage": "coder", "text": t})
+
+        code = await chat_stream(
+            messages=messages,
+            max_tokens=settings.lua_node_max_tokens,
+            on_token=on_token,
+        )
+
+    code = _strip_fences(code)
+    if not code or len(code) < 5:
+        # На правке лучше вернуть исходник, чем заглушку — пользователь увидит
+        # что модель ничего не меняла и сможет переформулировать.
+        return previous_code
+    return code
+
+
 async def run_fixer(
     code_block: str,
     error: str,
@@ -314,8 +358,16 @@ async def _plan_and_code(user_prompt: str, emit: Emit = None) -> str:
     return await _fix_loop(full_code, emit=emit)
 
 
-async def generate_code(user_prompt: str, emit: Emit = None) -> GenerationOutcome:
-    """Полный пайплайн нового запроса: сначала clarifier, потом (опционально) код."""
+async def generate_code(
+    user_prompt: str,
+    emit: Emit = None,
+    previous_code: str | None = None,
+) -> GenerationOutcome:
+    """Полный пайплайн нового запроса: сначала clarifier, потом (опционально) код.
+
+    Если передан previous_code и промпт выглядит как правка (is_edit_intent),
+    идём по короткой ветке: только coder + fixer, без clarifier/planner/searcher.
+    """
     log.info("[pipeline] === START prompt=%r (len=%d) ===", user_prompt[:80], len(user_prompt))
     t_total = time.perf_counter()
 
@@ -328,6 +380,25 @@ async def generate_code(user_prompt: str, emit: Emit = None) -> GenerationOutcom
         if emit is not None:
             await emit({"type": "error", "message": msg})
         return GenerationOutcome(questions=[msg])
+
+    if previous_code and is_edit_intent(user_prompt):
+        log.info("[pipeline] edit branch: previous_code=%d chars", len(previous_code))
+        await _emit_stage(emit, "coder")
+        t = time.perf_counter()
+        full_code = await run_lua_node_edit(user_prompt, previous_code, emit=emit)
+        log.info("[pipeline] coder (edit) done in %.2fs (code_chars=%d)",
+                 time.perf_counter() - t, len(full_code))
+        if emit is not None:
+            await emit({"type": "stage_done", "stage": "coder", "code": full_code})
+        code = await _fix_loop(full_code, emit=emit)
+        ep = extract_entry_point(code)
+        log.info("[pipeline] === END in %.2fs (edit, code_chars=%d) ===",
+                 time.perf_counter() - t_total, len(code))
+        return GenerationOutcome(
+            code=code,
+            inputs=extract_inputs(code, params=ep["params"] if ep else None),
+            entry_point=ep,
+        )
 
     await _emit_stage(emit, "clarifier")
     t = time.perf_counter()

@@ -1,10 +1,12 @@
 export interface GenerateRequest {
   prompt: string;
+  chat_session_id?: string;
 }
 
 export interface GenerateFollowupRequest {
   session_id: string;
   answers: string[];
+  chat_session_id?: string;
 }
 
 export interface EntryPoint {
@@ -17,12 +19,14 @@ export interface GenerateCode {
   code: string;
   inputs: Record<string, unknown> | null;
   entryPoint: EntryPoint | null;
+  chatSessionId: string | null;
 }
 
 export interface GenerateClarify {
   ok: "clarify";
   sessionId: string;
   questions: string[];
+  chatSessionId: string | null;
 }
 
 export interface GenerateError {
@@ -110,14 +114,17 @@ interface BackendGenerateResponse {
   inputs?: Record<string, unknown> | null;
   entry_point?: { name: string; params: string[] } | null;
   clarification?: { session_id: string; questions: string[] };
+  chat_session_id?: string | null;
 }
 
 function parseGenerateResponse(data: BackendGenerateResponse): GenerateResult {
+  const chatSessionId = data.chat_session_id ?? null;
   if (data.clarification) {
     return {
       ok: "clarify",
       sessionId: data.clarification.session_id,
       questions: data.clarification.questions ?? [],
+      chatSessionId,
     };
   }
   return {
@@ -127,6 +134,7 @@ function parseGenerateResponse(data: BackendGenerateResponse): GenerateResult {
     entryPoint: data.entry_point
       ? { name: data.entry_point.name, params: data.entry_point.params }
       : null,
+    chatSessionId,
   };
 }
 
@@ -150,17 +158,25 @@ async function postGenerate(
   return { ok: "error", ...parseFailureShape(res.status, errBody.detail) };
 }
 
-export function generateCode(prompt: string): Promise<GenerateResult> {
-  return postGenerate({ prompt } satisfies GenerateRequest);
+export function generateCode(
+  prompt: string,
+  chatSessionId?: string | null
+): Promise<GenerateResult> {
+  return postGenerate({
+    prompt,
+    ...(chatSessionId ? { chat_session_id: chatSessionId } : {}),
+  } satisfies GenerateRequest);
 }
 
 export function submitClarificationAnswers(
   sessionId: string,
-  answers: string[]
+  answers: string[],
+  chatSessionId?: string | null
 ): Promise<GenerateResult> {
   return postGenerate({
     session_id: sessionId,
     answers,
+    ...(chatSessionId ? { chat_session_id: chatSessionId } : {}),
   } satisfies GenerateFollowupRequest);
 }
 

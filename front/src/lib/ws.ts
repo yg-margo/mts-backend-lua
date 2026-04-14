@@ -24,12 +24,18 @@ export type WsServerEvent =
       cycle?: number;
     }
   | { type: "validator"; success: boolean; errors: WsValidatorError[] }
-  | { type: "clarification"; session_id: string; questions: string[] }
+  | {
+      type: "clarification";
+      session_id: string;
+      questions: string[];
+      chat_session_id?: string;
+    }
   | {
       type: "done";
       code: string;
       inputs: Record<string, unknown> | null;
       entry_point: { name: string; params: string[] } | null;
+      chat_session_id?: string;
     }
   | {
       type: "error";
@@ -46,8 +52,8 @@ export interface WsHandlers {
 }
 
 export type WsInitialPayload =
-  | { prompt: string }
-  | { session_id: string; answers: string[] };
+  | { prompt: string; chat_session_id?: string }
+  | { session_id: string; answers: string[]; chat_session_id?: string };
 
 function resolveWsUrl(): string {
   const base =

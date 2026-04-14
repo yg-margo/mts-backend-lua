@@ -16,7 +16,7 @@ from app.models.models import (
     GenerateRequest,
     GenerateResponse,
 )
-from app.services import sessions
+from app.services import chat_sessions, sessions
 from app.services.pipeline import (
     PipelineError,
     generate_code,
@@ -96,8 +96,10 @@ router = APIRouter()
 async def generate(body: GenerateRequest) -> GenerateResponse:
     try:
         if body.session_id is not None:
-            return await _handle_followup(body.session_id, body.answers or [])
-        return await _handle_new_prompt(body.prompt or "")
+            return await _handle_followup(
+                body.session_id, body.answers or [], body.chat_session_id
+            )
+        return await _handle_new_prompt(body.prompt or "", body.chat_session_id)
 
     except HTTPException:
         raise
@@ -209,11 +211,15 @@ async def generate_ws(ws: WebSocket) -> None:
     prompt = (body or {}).get("prompt")
     session_id = (body or {}).get("session_id")
     answers = (body or {}).get("answers") or []
+    chat_session_id = (body or {}).get("chat_session_id")
 
     async def emit(event: dict) -> None:
         await _ws_send(ws, event)
 
-    log.info("[ws] accept prompt=%r session_id=%r", (prompt or "")[:80], session_id)
+    log.info(
+        "[ws] accept prompt=%r session_id=%r chat_session_id=%r",
+        (prompt or "")[:80], session_id, chat_session_id,
+    )
     ws_t0 = time.perf_counter()
     hb_task = asyncio.create_task(_heartbeat(ws))
     try:
@@ -236,13 +242,17 @@ async def generate_ws(ws: WebSocket) -> None:
                 return
             sessions.pop(session_id)
             qa = list(zip(session.questions, answers))
+            chat_sid = chat_sessions.ensure(chat_session_id)
             outcome = await generate_code_from_clarified(session.prompt, qa, emit=emit)
+            if outcome.code:
+                chat_sessions.update_last_code(chat_sid, outcome.code, session.prompt)
             await emit(
                 {
                     "type": "done",
                     "code": outcome.code,
                     "inputs": outcome.inputs,
                     "entry_point": outcome.entry_point,
+                    "chat_session_id": chat_sid,
                 }
             )
             return
@@ -251,7 +261,11 @@ async def generate_ws(ws: WebSocket) -> None:
             await emit({"type": "error", "message": "prompt or session_id required"})
             return
 
-        outcome = await generate_code(prompt, emit=emit)
+        chat_sid = chat_sessions.ensure(chat_session_id)
+        previous_code = (
+            chat_sessions.get_last_code(chat_session_id) if chat_session_id else None
+        )
+        outcome = await generate_code(prompt, emit=emit, previous_code=previous_code)
         if outcome.questions:
             sid = sessions.create(prompt, outcome.questions)
             await emit(
@@ -259,16 +273,20 @@ async def generate_ws(ws: WebSocket) -> None:
                     "type": "clarification",
                     "session_id": sid,
                     "questions": outcome.questions,
+                    "chat_session_id": chat_sid,
                 }
             )
             return
 
+        if outcome.code:
+            chat_sessions.update_last_code(chat_sid, outcome.code, prompt)
         await emit(
             {
                 "type": "done",
                 "code": outcome.code,
                 "inputs": outcome.inputs,
                 "entry_point": outcome.entry_point,
+                "chat_session_id": chat_sid,
             }
         )
 
@@ -322,25 +340,37 @@ async def _ws_send(ws: WebSocket, event: dict) -> None:
         log.warning("WS send failed: %s", exc)
 
 
-async def _handle_new_prompt(prompt: str) -> GenerateResponse:
-    outcome = await generate_code(prompt)
+async def _handle_new_prompt(
+    prompt: str, chat_session_id: str | None
+) -> GenerateResponse:
+    chat_sid = chat_sessions.ensure(chat_session_id)
+    previous_code = (
+        chat_sessions.get_last_code(chat_session_id) if chat_session_id else None
+    )
+    outcome = await generate_code(prompt, previous_code=previous_code)
 
     if outcome.questions:
         sid = sessions.create(prompt, outcome.questions)
         return GenerateResponse(
             clarification=ClarificationPayload(
                 session_id=sid, questions=outcome.questions
-            )
+            ),
+            chat_session_id=chat_sid,
         )
 
+    if outcome.code:
+        chat_sessions.update_last_code(chat_sid, outcome.code, prompt)
     return GenerateResponse(
         code=outcome.code,
         inputs=outcome.inputs,
         entry_point=outcome.entry_point,
+        chat_session_id=chat_sid,
     )
 
 
-async def _handle_followup(session_id: str, answers: list[str]) -> GenerateResponse:
+async def _handle_followup(
+    session_id: str, answers: list[str], chat_session_id: str | None
+) -> GenerateResponse:
     # peek сначала — если длина ответов не совпала, сессия ещё должна быть
     # доступна для повторной отправки.
     session = sessions.peek(session_id)
@@ -360,9 +390,13 @@ async def _handle_followup(session_id: str, answers: list[str]) -> GenerateRespo
 
     sessions.pop(session_id)
     qa = list(zip(session.questions, answers))
+    chat_sid = chat_sessions.ensure(chat_session_id)
     outcome = await generate_code_from_clarified(session.prompt, qa)
+    if outcome.code:
+        chat_sessions.update_last_code(chat_sid, outcome.code, session.prompt)
     return GenerateResponse(
         code=outcome.code,
         inputs=outcome.inputs,
         entry_point=outcome.entry_point,
+        chat_session_id=chat_sid,
     )

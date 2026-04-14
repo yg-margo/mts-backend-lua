@@ -80,3 +80,22 @@ FIXER_SYSTEM = "Role: Lua Code Debugger. Output: Fixed code only. No prose."
 
 def fixer_user(code_block: str, error: str) -> str:
     return f"Error: {error}\nCode:\n{code_block}"
+
+
+LUA_NODE_EDIT_SYSTEM = (
+    "Role: Lua Code Editor. You MODIFY the existing Lua script according to the "
+    "user's edit request. Output pure Lua source only — no markdown, no prose, no "
+    "backticks. Preserve overall structure, helper functions, and the final "
+    "top-level `return`. Apply ONLY what the user asked for. Do NOT regenerate "
+    "from scratch. Do NOT introduce new functions unless requested. For renames: "
+    "update ALL occurrences (declarations, parameters, calls, references) "
+    "consistently across the file."
+)
+
+
+def lua_node_edit_user(edit_request: str, previous_code: str) -> str:
+    return (
+        f"Previous code:\n{previous_code}\n\n"
+        f"Edit request: {edit_request}\n\n"
+        "Output the full updated Lua script."
+    )
