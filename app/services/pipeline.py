@@ -5,6 +5,7 @@ pipeline.py — оркестратор: Planner → Searcher → Coder → Valid
 from __future__ import annotations
 import logging
 import re
+import html
 
 from app.core.config import settings
 from app.services.llm_client import chat, chat_json
@@ -60,12 +61,10 @@ async def run_planner(user_prompt: str) -> Plan:
         return Plan(steps=normalized)
     except Exception as e:
         log.warning("Planner failed: %s. Fallback to 1 step.", e)
-        # Если JSON сломался — делаем один шаг из всего промпта
         return Plan(steps=[user_prompt])
 
 
 def run_searcher(step: str) -> str:
-    # Берем ключевые слова из шага для RAG
     keywords = step.split()[:5]
     return search_snippets(keywords, top_k=2)
 
@@ -98,9 +97,6 @@ async def run_fixer(code_block: str, error: str) -> str:
 
 
 def _strip_fences(text: str) -> str:
-    # Снимаем опциональные markdown-обёртки ```lua ... ``` и всё.
-    # Политика «никаких HTML/прозы/Копировать код» теперь зашита в Modelfile (SYSTEM + few-shot),
-    # поэтому регекс-зоопарк тут больше не нужен и его не нужно расширять.
     text = text.strip()
     text = re.sub(r"^```(?:lua)?\s*\n?", "", text, flags=re.IGNORECASE)
     text = re.sub(r"\n?```$", "", text)
@@ -115,6 +111,9 @@ def _format_multistep_task(user_prompt: str, steps: list[str]) -> str:
         f"Sub-tasks to cover:\n{numbered}"
     )
 
+
+def _merge_steps(step_codes: list[tuple[str, str]]) -> str:
+    return "\n\n".join([code for step, code in step_codes])
 
 async def generate_code(user_prompt: str) -> str:
     log.info("Planner: generating plan for prompt=%r", user_prompt)
@@ -154,8 +153,6 @@ async def _fix_loop(full_code: str) -> str:
             fixed_block = await run_fixer(block_to_fix, err.message)
             full_code = full_code.replace(block_to_fix, fixed_block, 1)
         else:
-            # блок не уникален (или не найден) — переписываем весь файл целиком,
-            # иначе str.replace либо правит не тот кусок, либо стирает всё остальное.
             full_code = await run_fixer(full_code, err.message)
 
     result = validate(full_code)
