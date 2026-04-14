@@ -75,17 +75,13 @@ async def run_fixer(code_block: str, error: str) -> str:
 
 
 def _strip_fences(text: str) -> str:
-    # 1. Вырезаем полные HTML-теги
     text = re.sub(r'<[^>]*>', '', text)
 
-    # 2. ВЫЖИГАЕМ МУСОР ОТ ГЛУПОЙ МОДЕЛИ: "kw">, "cmt">, "fn"> и т.д.
     text = re.sub(r'"{1,2}(kw|cmt|str|num|fn|op|tag)"?\s*>?\s*', '', text)
 
-    # 3. Убираем markdown-блоки
     text = re.sub(r"^```(?:lua)?\s*\n?", "", text.strip(), flags=re.IGNORECASE)
     text = re.sub(r"\n?```$", "", text.strip())
 
-    # 4. Отрезаем "воду" перед кодом
     lua_start = re.search(
         r"(?i)^(.*?)(?=\bfunction\b|\blocal\b|\breturn\b|\bif\b|\bfor\b|\bwhile\b|--)",
         text
@@ -93,10 +89,12 @@ def _strip_fences(text: str) -> str:
     if lua_start and lua_start.lastindex and lua_start.lastindex >= 2:
         text = text[lua_start.start(2):]
 
-    # 5. ФИНАЛЬНАЯ ЗАЧИСТКА: убираем любую левую скобку > в начале строки
     text = re.sub(r'^[^a-zA-Z0-9_-]+', '', text)
 
     return text.strip()
+
+def _merge_steps(step_codes: list[tuple[str, str]]) -> str:
+    return "\n\n".join([code for step, code in step_codes])
 
 async def generate_code(user_prompt: str) -> str:
     log.info("Planner: generating plan for prompt=%r", user_prompt)
