@@ -8,7 +8,7 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     llm_base_url: str = "http://localhost:11434/v1"
     llm_api_key: str = "ollama"
-    llm_model: str = "qwen2.5-coder:7b"
+    llm_model: str = "lua-coder:mts"
 
     planner_max_tokens: int = 256
     coder_max_tokens: int = 256

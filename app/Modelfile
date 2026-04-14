@@ -3,5 +3,27 @@ FROM qwen2.5-coder:7b
 PARAMETER num_ctx 4096
 PARAMETER num_predict 256
 PARAMETER num_batch 1
+PARAMETER temperature 0.2
+# num_parallel=1 задаётся на уровне Ollama-сервера (env OLLAMA_NUM_PARALLEL=1
+# или флагом `--parallel 1`), а не в Modelfile.
 
-SYSTEM "You are a professional Lua expert. Always wrap your code or JSON output in markdown blocks using triple backticks (```). For code, use ```lua. For JSON, use ```json. Do not provide any explanations or prose outside the blocks."
+SYSTEM "Output raw Lua source that parses with luac -p. Follow the few-shot examples below for format."
+
+MESSAGE user """Task: function that validates an email address"""
+MESSAGE assistant """function validateEmail(email)
+    if email == nil or email == "" then return false end
+    return email:match("^[%w%._%-]+@[%w%.%-]+%.[%a]+$") ~= nil
+end"""
+
+MESSAGE user """Task: сумма двух чисел"""
+MESSAGE assistant """function sum(a, b)
+    return a + b
+end"""
+
+MESSAGE user """Task: перевести строку YYYYMMDD в ISO-дату"""
+MESSAGE assistant """function toIsoDate(datum)
+    local year = string.sub(datum, 1, 4)
+    local month = string.sub(datum, 5, 6)
+    local day = string.sub(datum, 7, 8)
+    return string.format("%s-%s-%s", year, month, day)
+end"""
