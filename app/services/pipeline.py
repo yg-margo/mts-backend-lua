@@ -50,6 +50,27 @@ def _is_task_like(prompt: str) -> bool:
     return bool(re.search(r"[A-Za-zА-Яа-яЁё]", s))
 
 
+# На бессмысленный ввод lua_node иногда отдаёт английскую прозу вида
+# "I'm sorry, but I don't understand...". Fixer тогда оборачивает её в
+# fake-Lua (`function understandTask(task) return ... end`) и валидатор
+# это принимает. Грубая проверка «есть ли в тексте хоть один Lua-токен»
+# ловит такие случаи до fixer'а.
+# Ключевые слова намеренно сужены до Lua-специфичных (function/local/elseif/
+# nil/repeat/until) плюс `return` — он обязателен в выводе lua_node согласно
+# LUA_NODE_SYSTEM. Общеанглийские if/do/for/true/false убраны, чтобы не ловить
+# прозу. `\w+\(` требует вызова функции (а не одиночной скобки в прозе).
+_LUA_TOKEN_RE = re.compile(
+    r"\b(function|local|elseif|nil|repeat|until|return)\b"
+    r"|="
+    r"|\.\."
+    r"|\w+\("
+)
+
+
+def _looks_like_lua(code: str) -> bool:
+    return bool(_LUA_TOKEN_RE.search(code or ""))
+
+
 @dataclass
 class GenerationOutcome:
     """Результат первого шага пайплайна: либо код + inputs, либо вопросы."""
@@ -290,6 +311,24 @@ def _looks_single_task(prompt: str) -> bool:
     return True
 
 
+# Маркеры размытости, которые CLARIFIER_SYSTEM (prompts.py) уже считает
+# неконкретными. Если ни один маркер не встречается в коротком промпте —
+# clarifier почти гарантированно вернёт [], и его можно пропустить.
+_VAGUE_MARKERS_RE = re.compile(
+    r"\b(?:something|stuff|thing|кое|что-то|что-нибудь|какой-то|какой-нибудь|штук[ауи])\b",
+    re.IGNORECASE,
+)
+
+
+def _clarifier_fast_path(prompt: str) -> bool:
+    s = prompt.strip()
+    if len(s) > 60:
+        return False
+    if _VAGUE_MARKERS_RE.search(s):
+        return False
+    return True
+
+
 async def _emit_stage(emit: Emit, stage: str, **extra: Any) -> None:
     if emit is None:
         return
@@ -401,16 +440,22 @@ async def generate_code(
         )
 
     await _emit_stage(emit, "clarifier")
-    t = time.perf_counter()
-    clarification = await run_clarifier(user_prompt)
-    log.info("[pipeline] clarifier done in %.2fs (questions=%d)",
-             time.perf_counter() - t, len(clarification.questions or []))
-    if clarification.questions:
-        log.info("[pipeline] Clarifier returned questions; pausing pipeline")
-        log.info("[pipeline] === END in %.2fs (clarification) ===", time.perf_counter() - t_total)
-        return GenerationOutcome(questions=clarification.questions)
+    if _clarifier_fast_path(user_prompt):
+        log.info("[pipeline] clarifier fast-path: skipping LLM call (len=%d)",
+                 len(user_prompt))
+        if emit is not None:
+            await emit({"type": "stage_done", "stage": "clarifier", "skipped": True})
+    else:
+        t = time.perf_counter()
+        clarification = await run_clarifier(user_prompt)
+        log.info("[pipeline] clarifier done in %.2fs (questions=%d)",
+                 time.perf_counter() - t, len(clarification.questions or []))
+        if clarification.questions:
+            log.info("[pipeline] Clarifier returned questions; pausing pipeline")
+            log.info("[pipeline] === END in %.2fs (clarification) ===", time.perf_counter() - t_total)
+            return GenerationOutcome(questions=clarification.questions)
+        log.info("[pipeline] Clarifier clear, proceeding")
 
-    log.info("[pipeline] Clarifier clear, proceeding")
     code = await _plan_and_code(user_prompt, emit=emit)
     ep = extract_entry_point(code)
     log.info("[pipeline] === END in %.2fs (code_chars=%d) ===", time.perf_counter() - t_total, len(code))
@@ -439,6 +484,24 @@ async def generate_code_from_clarified(
 
 
 async def _fix_loop(full_code: str, emit: Emit = None) -> str:
+    # Если lua_node вернул чистую прозу (англ. "I'm sorry..." и т.п.) —
+    # fixer всё равно «починит» это в fake-Lua. Лучше сразу 422 с понятным
+    # сообщением, чем отдавать пользователю мусорный скрипт.
+    if not _looks_like_lua(full_code):
+        log.warning(
+            "[pipeline] lua_node returned non-Lua content (%d chars); "
+            "skipping fix loop",
+            len(full_code),
+        )
+        raise PipelineError(
+            message=(
+                "Модель не смогла интерпретировать запрос как Lua-задачу. "
+                "Переформулируйте задачу — опишите, что нужно реализовать."
+            ),
+            errors=[],
+            code=full_code,
+        )
+
     for cycle in range(1, settings.max_fix_cycles + 1):
         await _emit_stage(emit, "validator", cycle=cycle)
         result: ValidationResult = validate(full_code)

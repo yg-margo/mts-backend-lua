@@ -3,18 +3,22 @@ prompts.py — ультракороткие промпты для экономи
 """
 
 CLARIFIER_SYSTEM = (
-    "Role: Lua Task Ambiguity Detector. "
+    "Role: Lua Task Gate. "
     "Output STRICT JSON: {\"questions\": [...]}. No prose. No markdown. No code. "
-    "ASK when the task fails to name any of: "
-    "(1) a concrete subject — WHAT to build/generate/process "
-    "(placeholders like 'something', 'stuff', 'кое что', 'что-то', 'штука', "
-    "'какой-то', 'какой-нибудь' do NOT count as a subject); "
-    "(2) the data source — where the input comes from, when the task implies input; "
-    "(3) the output format or return shape, when not obvious from the subject; "
-    "(4) a critical parameter — filter condition, range, unit of measure. "
-    "Return [] ONLY when the subject is concrete AND source/format are either "
-    "given or obvious from the subject (e.g. 'factorial of n', 'hello world'). "
-    "Max 2 questions, each ≤12 words, in the user's language. "
+    "Return [] ONLY if the prompt is an unambiguous Lua programming task — it names "
+    "a concrete programmatic ACTION (compute, transform, filter, generate, return, "
+    "format, validate, parse, sort, check, etc.) and, when the action implies input, "
+    "names the data source. "
+    "For EVERYTHING ELSE, ask exactly: "
+    "[\"Что нужно реализовать? Опишите задачу одним предложением.\"] "
+    "(or the equivalent in the user's language). "
+    "\"Everything else\" includes: greetings ('hi', 'привет', 'hello'); "
+    "questions ABOUT the assistant ('who are you', 'почему ты...', 'как ты работаешь', "
+    "'что ты умеешь'); acknowledgements ('thanks', 'ок', 'спасибо'); "
+    "vague wishes without an action ('хочу что-то', 'сделай штуку', 'process something'); "
+    "unreadable input (keyboard mash, random letters). "
+    "If the task IS a Lua task but missing a critical detail (source, output shape, "
+    "filter parameter), ask up to 2 questions, each ≤12 words, in the user's language. "
     "Never ask about naming, style, performance, or optional details."
 )
 
@@ -22,24 +26,39 @@ CLARIFIER_SYSTEM = (
 def clarifier_user(prompt: str) -> str:
     return (
         "Examples:\n"
+        '# Clear Lua task — return []\n'
         'Task: "print hello world"\n'
+        'Output: {"questions": []}\n'
+        'Task: "hello world"\n'
         'Output: {"questions": []}\n'
         'Task: "compute factorial of a number"\n'
         'Output: {"questions": []}\n'
         'Task: "посчитай факториал n"\n'
         'Output: {"questions": []}\n'
+        'Task: "факториал n"\n'
+        'Output: {"questions": []}\n'
         'Task: "sum list of numbers"\n'
         'Output: {"questions": []}\n'
+        '# Lua task, but missing a detail — up to 2 specific questions\n'
         'Task: "process the data"\n'
         'Output: {"questions": ["Where does the data come from?", "What should be returned?"]}\n'
         'Task: "filter records"\n'
         'Output: {"questions": ["Which field to filter by?", "What is the filter condition?"]}\n'
-        'Task: "make a generator"\n'
-        'Output: {"questions": ["A generator of what (number, string, id, password)?", "What output format?"]}\n'
         'Task: "сделай генератор кое чего"\n'
         'Output: {"questions": ["Генератор чего именно нужен (число, строка, id, пароль)?", "В каком формате вернуть результат?"]}\n'
-        'Task: "обработай штуку"\n'
-        'Output: {"questions": ["Что именно обработать (список, строку, json)?", "Что вернуть на выходе?"]}\n'
+        '# NOT a Lua task (greeting / meta-question / gibberish / thanks) — single fixed question\n'
+        'Task: "привет"\n'
+        'Output: {"questions": ["Что нужно реализовать? Опишите задачу одним предложением."]}\n'
+        'Task: "почему ты не задаёшь вопросы"\n'
+        'Output: {"questions": ["Что нужно реализовать? Опишите задачу одним предложением."]}\n'
+        'Task: "кто ты"\n'
+        'Output: {"questions": ["Что нужно реализовать? Опишите задачу одним предложением."]}\n'
+        'Task: "спасибо"\n'
+        'Output: {"questions": ["Что нужно реализовать? Опишите задачу одним предложением."]}\n'
+        'Task: "шгршгршгуцйзйшов"\n'
+        'Output: {"questions": ["Что нужно реализовать? Опишите задачу одним предложением."]}\n'
+        'Task: "asdf qwerty zxcvb"\n'
+        'Output: {"questions": ["What should the Lua script do?"]}\n'
         "---\n"
         f"Task: {prompt}\n"
         "Output:"
