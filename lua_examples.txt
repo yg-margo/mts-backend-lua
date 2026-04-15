@@ -1,17 +1,17 @@
 # LocalScript API — пример Lua-документации для RAG
 # Каждый блок разделён пустой строкой (2+ символа \n).
-# Блоки берутся из публичной выборки MWS Octapi.
+# Рантайм песочницы прокидывает данные как глобал `input` (уже распарсенная Lua-таблица).
 
 -- [1] Последний элемент массива
--- Получить последний email из wf.vars.emails
-return wf.vars.emails[#wf.vars.emails]
+-- Получить последний email из input.emails
+return input.emails[#input.emails]
 
 -- [2] Счётчик попыток (инкремент)
--- wf.vars.try_count_n — текущее значение счётчика
-return wf.vars.try_count_n + 1
+-- input.try_count_n — текущее значение счётчика
+return input.try_count_n + 1
 
--- [3] Очистка значений в переменных (оставить только ID, ENTITY_ID, CALL)
-result = wf.vars.RESTbody.result
+-- [3] Очистка значений в таблице (оставить только ID, ENTITY_ID, CALL)
+local result = input.RESTbody.result
 for _, filteredEntry in pairs(result) do
     for key, value in pairs(filteredEntry) do
         if key ~= "ID" and key ~= "ENTITY_ID" and key ~= "CALL" then
@@ -22,23 +22,24 @@ end
 return result
 
 -- [4] Приведение времени YYYYMMDD + HHMMSS → ISO 8601
-DATUM = wf.vars.json.IDOC.ZCDF_HEAD.DATUM
-TIME  = wf.vars.json.IDOC.ZCDF_HEAD.TIME
+-- input — уже распарсенная JSON-таблица, никаких json.decode/loadstring не нужно.
+local DATUM = input.IDOC.ZCDF_HEAD.DATUM
+local TIME  = input.IDOC.ZCDF_HEAD.TIME
 local function safe_sub(str, start, finish)
     local s = string.sub(str, start, math.min(finish, #str))
     return s ~= "" and s or "00"
 end
-year   = safe_sub(DATUM, 1, 4)
-month  = safe_sub(DATUM, 5, 6)
-day    = safe_sub(DATUM, 7, 8)
-hour   = safe_sub(TIME,  1, 2)
-minute = safe_sub(TIME,  3, 4)
-second = safe_sub(TIME,  5, 6)
-iso_date = string.format('%s-%s-%sT%s:%s:%s.00000Z', year, month, day, hour, minute, second)
+local year   = safe_sub(DATUM, 1, 4)
+local month  = safe_sub(DATUM, 5, 6)
+local day    = safe_sub(DATUM, 7, 8)
+local hour   = safe_sub(TIME,  1, 2)
+local minute = safe_sub(TIME,  3, 4)
+local second = safe_sub(TIME,  5, 6)
+local iso_date = string.format('%s-%s-%sT%s:%s:%s.00000Z', year, month, day, hour, minute, second)
 return iso_date
 
 -- [5] Проверка типа: привести items к массиву
-function ensureArray(t)
+local function ensureArray(t)
     if type(t) ~= "table" then return {t} end
     local isArray = true
     for k, v in pairs(t) do
@@ -46,7 +47,7 @@ function ensureArray(t)
     end
     return isArray and t or {t}
 end
-function ensureAllItemsAreArrays(objectsArray)
+local function ensureAllItemsAreArrays(objectsArray)
     if type(objectsArray) ~= "table" then return objectsArray end
     for _, obj in ipairs(objectsArray) do
         if type(obj) == "table" and obj.items then
@@ -55,11 +56,11 @@ function ensureAllItemsAreArrays(objectsArray)
     end
     return objectsArray
 end
-return ensureAllItemsAreArrays(wf.vars.json.IDOC.ZCDF_HEAD.ZCDF_PACKAGES)
+return ensureAllItemsAreArrays(input.IDOC.ZCDF_HEAD.ZCDF_PACKAGES)
 
 -- [6] Фильтрация массива: только элементы с Discount или Markdown
-local result = _utils.array.new()
-local items  = wf.vars.parsedCsv
+local result = {}
+local items  = input.parsedCsv
 for _, item in ipairs(items) do
     if (item.Discount ~= "" and item.Discount ~= nil)
     or (item.Markdown ~= "" and item.Markdown ~= nil) then
@@ -69,7 +70,7 @@ end
 return result
 
 -- [7] Конвертация ISO 8601 с офсетом → Unix epoch
-local iso_time = wf.initVariables.recallTime
+local iso_time = input.recallTime
 local days_in_month = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31}
 if not iso_time or not iso_time:match("^%d%d%d%d%-%d%d%-%d%dT") then return nil end
 local function is_leap_year(year)
@@ -106,3 +107,21 @@ local function parse_iso8601_to_epoch(iso_str)
 end
 local epoch_seconds = parse_iso8601_to_epoch(iso_time)
 return epoch_seconds
+
+-- [8] Извлечь поля из уже распарсенного JSON-сообщения
+-- input — это Lua-таблица (JSON уже распарсен рантаймом). Никаких json.decode,
+-- cjson, loadstring или load — просто обращаемся к полям напрямую.
+return { user_id = input.user_id, email = input.email }
+
+-- [9] Фильтр массива по полю (пользователи старше 18)
+local adults = {}
+for _, user in ipairs(input.users) do
+    if user.age and user.age >= 18 then
+        table.insert(adults, user)
+    end
+end
+return adults
+
+-- [10] Безопасное извлечение вложенного поля с дефолтом
+local city = input.profile and input.profile.address and input.profile.address.city
+return city or "unknown"

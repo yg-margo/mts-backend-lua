@@ -29,4 +29,14 @@ MESSAGE assistant """function toIsoDate(datum)
     local day = string.sub(datum, 7, 8)
     return string.format("%s-%s-%s", year, month, day)
 end
-return toIsoDate(wf.vars.datum)"""
+return toIsoDate(input.datum)"""
+
+MESSAGE user """Task: извлеки поля user_id и email из входящего JSON-сообщения"""
+MESSAGE assistant """return {user_id = input.user_id, email = input.email}"""
+
+MESSAGE user """Task: посчитай сумму чисел в массиве"""
+MESSAGE assistant """local total = 0
+for _, n in ipairs(input.numbers) do
+    total = total + n
+end
+return total"""

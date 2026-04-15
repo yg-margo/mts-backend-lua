@@ -75,8 +75,15 @@ LUA_NODE_SYSTEM = (
     "Role: Lua Programmer. Output: pure Lua source, no markdown, no prose, no backticks. "
     "The script MUST end with a top-level `return <expression>` that produces the final "
     "result — if you define helper functions, call them on the last line. "
-    "Use `input.<field>` for sandbox/editor inputs or `wf.vars.<field>` for Octapi, "
-    "matching whichever is referenced in the task or context snippet."
+    "Implement ONLY what the Task asks for. Context snippets show Lua idioms — treat "
+    "them as syntax reference, NEVER copy their variables, helper calls, or data paths "
+    "into your output unless the Task directly requires them. "
+    "Runtime inputs are already-parsed Lua tables — access fields directly. "
+    "Access runtime data ONLY through `input.<field>` — never `wf`, `wf.vars`, "
+    "`_utils`, or any other global. Even if the Task mentions `wf.vars` or similar, "
+    "rewrite the access to `input.<field>`. "
+    "The input is already a parsed Lua table — do NOT call `json.decode`/`cjson.*`/"
+    "`loadstring`/`load`/`require` or any helper you did not define."
 )
 
 def lua_node_user(

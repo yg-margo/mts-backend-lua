@@ -62,6 +62,87 @@ def _check_luac(code: str) -> list[ErrorDetail]:
     return [ErrorDetail(line=line_no, message=output, code_block=block)]
 
 
+_FORBIDDEN_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    (
+        re.compile(r"\bwf\s*\."),
+        "Use 'input.<field>' instead of 'wf.*' — 'wf' is not available in this runtime.",
+    ),
+    (
+        re.compile(r"\bloadstring\s*\("),
+        "'loadstring' is forbidden; runtime inputs are already parsed Lua tables — access fields directly.",
+    ),
+    (
+        re.compile(r"\bload\s*\("),
+        "'load' is forbidden; runtime inputs are already parsed Lua tables — access fields directly.",
+    ),
+    (
+        re.compile(r"\bjson\s*\.\s*decode\b|\bcjson\s*\."),
+        "JSON parsers are forbidden; runtime inputs are already parsed Lua tables.",
+    ),
+    (
+        re.compile(r"\brequire\s*\("),
+        "'require' is forbidden in the sandbox.",
+    ),
+    (
+        re.compile(r"\b_utils\s*\."),
+        "'_utils' is not available in this runtime; use plain Lua tables ({}) instead.",
+    ),
+]
+
+
+def _mask_strings_and_comments(code: str) -> str:
+    """Replace string/comment content with spaces so forbidden-identifier
+    regexes don't fire inside literals or comments, while preserving line
+    numbers and column positions."""
+
+    def _space(match: re.Match[str]) -> str:
+        return re.sub(r"[^\n]", " ", match.group(0))
+
+    patterns = [
+        r"--\[\[.*?\]\]",           # block comment (non-greedy, may span lines)
+        r"--[^\n]*",                # line comment
+        r"\[\[.*?\]\]",             # long-bracket string
+        r'"(?:\\.|[^"\\\n])*"',   # double-quoted string
+        r"'(?:\\.|[^'\\\n])*'",   # single-quoted string
+    ]
+    masked = code
+    for pat in patterns:
+        masked = re.sub(pat, _space, masked, flags=re.DOTALL)
+    return masked
+
+
+def _check_forbidden_identifiers(code: str) -> list[ErrorDetail]:
+    """Detect forbidden identifiers (wf.*, loadstring, load, json.decode,
+    cjson.*, require, _utils.*) and return a single aggregated ErrorDetail so
+    the fixer sees every issue at once — MAX_FIX_CYCLES=1 only addresses the
+    first error."""
+    masked = _mask_strings_and_comments(code)
+    hits: list[tuple[int, str]] = []
+    seen_messages: set[str] = set()
+    for regex, message in _FORBIDDEN_PATTERNS:
+        for m in regex.finditer(masked):
+            line_no = masked.count("\n", 0, m.start()) + 1
+            hits.append((line_no, message))
+    if not hits:
+        return []
+    hits.sort(key=lambda h: h[0])
+    first_line = hits[0][0]
+    # Dedupe messages while preserving order.
+    ordered: list[str] = []
+    for _, msg in hits:
+        if msg not in seen_messages:
+            seen_messages.add(msg)
+            ordered.append(msg)
+    combined = "Forbidden identifiers in generated Lua:\n- " + "\n- ".join(ordered)
+    return [
+        ErrorDetail(
+            line=first_line,
+            message=combined,
+            code_block=code,
+        )
+    ]
+
+
 def _check_selene(code: str) -> list[ErrorDetail]:
     try:
         rc, output = _run(["selene", "--display-style", "json", "-"], input_text=code)
@@ -84,7 +165,9 @@ def _check_selene(code: str) -> list[ErrorDetail]:
 
 def validate(code: str) -> ValidationResult:
     errors: list[ErrorDetail] = []
-    errors.extend(_check_luac(code))
+    errors.extend(_check_forbidden_identifiers(code))
+    if not errors:
+        errors.extend(_check_luac(code))
     if not errors:
         errors.extend(_check_selene(code))
 
