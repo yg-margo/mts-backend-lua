@@ -108,10 +108,6 @@ end
 local epoch_seconds = parse_iso8601_to_epoch(iso_time)
 return epoch_seconds
 
--- [8] Извлечь поля из уже распарсенного JSON-сообщения
--- input — это Lua-таблица (JSON уже распарсен рантаймом). Никаких json.decode,
--- cjson, loadstring или load — просто обращаемся к полям напрямую.
-return { user_id = input.user_id, email = input.email }
 
 -- [9] Фильтр массива по полю (пользователи старше 18)
 local adults = {}
