@@ -11,17 +11,28 @@ MODELFILE_PATH="${MODELFILE_PATH:-/app/app/Modelfile}"
 
 log() { echo "[entrypoint] $*"; }
 
-log "Probing Ollama at ${LLM_BASE_URL}/models ..."
+log "Probing Ollama at ${LLM_BASE_URL}/models (up to 60s) ..."
 OLLAMA_OK=""
 for i in $(seq 1 60); do
-    if curl -fsS -o /dev/null --max-time 2 "${LLM_BASE_URL}/models"; then
+    if curl -fs -o /dev/null --max-time 2 "${LLM_BASE_URL}/models" 2>/dev/null; then
         log "Ollama reachable after ${i}s"
         OLLAMA_OK=1
         break
     fi
     sleep 1
 done
-[ -z "$OLLAMA_OK" ] && log "WARN: Ollama unreachable after 60s — continuing (lifespan warmup will log the failure)."
+if [ -z "$OLLAMA_OK" ]; then
+    log "WARN: Ollama unreachable at ${LLM_BASE_URL} after 60s."
+    log "      If you started the app without a profile, no Ollama container was created."
+    log "      Options:"
+    log "        1) docker compose --profile gpu up --build       (NVIDIA passthrough)"
+    log "        2) docker compose --profile cpu up --build       (no GPU, slow)"
+    log "        3) run Ollama natively on the host, then:"
+    log "           LLM_BASE_URL=http://host.docker.internal:11434/v1 \\"
+    log "           EMBED_BASE_URL=http://host.docker.internal:11434/v1 \\"
+    log "           docker compose up app --build"
+    log "      Starting the app anyway — API will 500 on generation requests."
+fi
 
 if [ "$AUTO_BUILD_MODEL" = "1" ] && [ -n "$OLLAMA_OK" ]; then
     if TAGS_JSON="$(curl -fsS --max-time 3 "${OLLAMA_NATIVE}/api/tags" 2>/dev/null)"; then
