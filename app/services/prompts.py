@@ -8,7 +8,14 @@ CLARIFIER_SYSTEM = (
     "Return [] ONLY if the prompt is an unambiguous Lua programming task — it names "
     "a concrete programmatic ACTION (compute, transform, filter, generate, return, "
     "format, validate, parse, sort, check, etc.) and, when the action implies input, "
-    "names the data source. "
+    "names a CONCRETE data source or object — not a placeholder. "
+    "Placeholder-objects DO NOT count as a named source: "
+    "'что-то', 'что-нибудь', 'кое что', 'кое-что', 'штука', 'штуку', 'инфа', "
+    "bare 'данные'/'данных' without saying which, "
+    "'something', 'anything', 'stuff', 'things', bare 'data' without saying which. "
+    "A known action + placeholder-object (e.g. 'парсить что-то', 'parse something', "
+    "'обработать данные') is a Lua task with a MISSING critical detail — ask up to 2 "
+    "questions, do NOT return []. "
     "For EVERYTHING ELSE, ask exactly: "
     "[\"Что нужно реализовать? Опишите задачу одним предложением.\"] "
     "(or the equivalent in the user's language). "
@@ -44,6 +51,12 @@ def clarifier_user(prompt: str) -> str:
         'Output: {"questions": ["Where does the data come from?", "What should be returned?"]}\n'
         'Task: "filter records"\n'
         'Output: {"questions": ["Which field to filter by?", "What is the filter condition?"]}\n'
+        'Task: "парсить что-то"\n'
+        'Output: {"questions": ["Что именно парсить (строка, JSON, CSV)?", "Откуда берутся данные?"]}\n'
+        'Task: "parse something"\n'
+        'Output: {"questions": ["What should be parsed (string, JSON, CSV)?", "Where does the input come from?"]}\n'
+        'Task: "обработать данные"\n'
+        'Output: {"questions": ["Какие именно данные (список чисел, строк, записей)?", "Что с ними сделать?"]}\n'
         'Task: "сделай генератор кое чего"\n'
         'Output: {"questions": ["Генератор чего именно нужен (число, строка, id, пароль)?", "В каком формате вернуть результат?"]}\n'
         '# NOT a Lua task (greeting / meta-question / gibberish / thanks) — single fixed question\n'
