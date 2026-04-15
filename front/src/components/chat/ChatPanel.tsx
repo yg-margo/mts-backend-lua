@@ -139,9 +139,6 @@ export function ChatPanel() {
         case "plan":
           t.appendEvent({ kind: "plan", steps: ev.steps });
           break;
-        case "snippet":
-          t.appendEvent({ kind: "snippet", preview: ev.preview });
-          break;
         case "token":
           t.appendToken(ev.stage, ev.text, ev.cycle);
           break;

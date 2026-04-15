@@ -5,7 +5,7 @@ Goal: split user-supplied Lua context into semantically coherent chunks so we
 can pack only the most relevant pieces into the 4096-token input window,
 leaving room for the mandatory ≤256 output tokens.
 
-Used by the /generate-from-context endpoint. Falls back to the regex splitter
+Used by the /generate-from-context endpoint. Falls back to a regex splitter
 (\\n{2,}) when tree-sitter fails, so a malformed Example node never blocks
 generation — it just gets less-structured chunks.
 """
@@ -19,9 +19,30 @@ from typing import Optional
 
 from rank_bm25 import BM25Okapi
 
-from app.services.rag import tokenize
-
 log = logging.getLogger(__name__)
+
+
+_STOPWORDS = frozenset({
+    "a", "an", "the", "and", "or", "but", "if", "then", "else",
+    "is", "are", "was", "were", "be", "been", "being",
+    "do", "does", "did", "doing",
+    "have", "has", "had", "having",
+    "of", "in", "on", "at", "to", "for", "with", "by", "from", "as",
+    "that", "this", "these", "those", "it", "its", "there", "here",
+    "i", "you", "he", "she", "we", "they", "me", "us", "them",
+    "please", "want", "need", "should", "would", "could", "can", "may",
+    "write", "make", "create", "build", "implement", "add", "use",
+    "function", "code", "script", "program", "lua",
+})
+
+_TOKEN_RE = re.compile(r"\w+", re.UNICODE)
+
+
+def tokenize(text: str) -> list[str]:
+    return [
+        t for t in _TOKEN_RE.findall(text.lower())
+        if len(t) > 1 and t not in _STOPWORDS
+    ]
 
 
 @dataclass(frozen=True)
@@ -120,7 +141,6 @@ def _walk_top_level(root, source: bytes) -> list[LuaChunk]:
 
 
 def _fallback_split(code: str) -> list[LuaChunk]:
-    # Same behavior as rag.py: split on blank-line runs.
     raw = re.split(r"\n{2,}", code)
     return [LuaChunk(text=b.strip(), kind="fallback") for b in raw if b.strip()]
 
@@ -133,7 +153,7 @@ def chunk_lua(code: str) -> list[LuaChunk]:
       1. Try tree-sitter top-level walk (with comments attached to their
          statement).
       2. If the parser is unavailable, or the root contains an ERROR node at
-         the top level, fall back to the blank-line splitter used by rag.py.
+         the top level, fall back to a blank-line regex splitter.
 
     An empty input yields [].
     """

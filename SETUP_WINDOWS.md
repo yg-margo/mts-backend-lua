@@ -1,213 +1,182 @@
-# Запуск на Windows — пошаговая инструкция
+# Запуск на Windows — Docker
 
-Документ для проверяющих и для разработчиков, поднимающих стенд с нуля. Всё делается в обычном `cmd` от имени пользователя (админ не нужен, кроме инсталляторов).
+Документ для проверяющих и для разработчиков, поднимающих стенд с нуля. Весь прод-контур крутится в Docker: отдельно поднимать Python, Node.js, Lua или `luac` **не нужно** — всё уже внутри образа.
 
 ---
 
 ## 0. Системные требования
 
-- **GPU**: NVIDIA с ≥ 8 GB VRAM, свежий драйвер (CUDA-совместимый). Проверка: `nvidia-smi` должна показать карту.
-- **Диск**: ~10 GB свободно (модели + зависимости).
-- **ОС**: Windows 10/11 x64.
+- **ОС**: Windows 10 22H2 / Windows 11 x64.
+- **GPU**: NVIDIA с ≥ 8 GB VRAM, свежий драйвер (CUDA-совместимый, Game Ready / Studio 552+). Проверка: в PowerShell `nvidia-smi` должна показать карту.
+- **Docker Desktop** с включённым бэкендом WSL 2 и GPU-пробросом (`Settings → Resources → WSL Integration`, `Settings → Docker Engine` — в секции `features.gpu` должно быть `true`).
+- **Диск**: ~15 GB свободно (~5 GB базовый образ + ~5 GB модели Ollama + запас).
 
-Без дискретной NVIDIA-карты Ollama пойдёт на CPU и запрос `/generate` будет отвечать минутами — это проверочный стенд не пройдёт.
+Без дискретной NVIDIA-карты можно запустить CPU-профиль, но генерация будет занимать минуты — проверочный стенд по ТЗ не пройдёт.
 
 ---
 
 ## 1. Поставить пререкизиты
 
-Все ссылки — официальные инсталляторы. После каждой установки **открывайте новый `cmd`**, чтобы подхватился обновлённый `PATH`.
-
 | Что | Откуда | Проверка |
 |---|---|---|
-| Python 3.10+ | <https://www.python.org/downloads/windows/> (при установке включить "Add python.exe to PATH") | `python --version` |
-| Node.js LTS | <https://nodejs.org> | `node -v` и `npm -v` |
-| Git | <https://git-scm.com/download/win> | `git --version` |
-| Ollama for Windows | <https://ollama.com/download/windows> | `ollama --version` |
-| Lua (нужен `luac`) | <https://luabinaries.sourceforge.net/> — качнуть архив Lua 5.4 Windows x64, распаковать, положить `luac54.exe` (переименовать в `luac.exe`) в любую папку из `PATH`, или добавить папку в `PATH` | `luac -v` |
-| *(опц.)* selene | <https://github.com/Kampfkarren/selene/releases> — скачать `selene-*-windows.zip`, положить `selene.exe` в `PATH` | `selene --version` |
+| **Docker Desktop for Windows** | <https://www.docker.com/products/docker-desktop/> — при установке выбрать бэкенд **WSL 2** | `docker --version`, `docker compose version` |
+| **NVIDIA Driver** (если используется GPU) | <https://www.nvidia.com/Download/index.aspx> — Game Ready или Studio, ≥ 552 | `nvidia-smi` в PowerShell |
+| **Git** | <https://git-scm.com/download/win> | `git --version` |
 
-`selene` необязателен — если его нет, бэкенд просто пропустит шаг статического анализа.
+После установки Docker Desktop **перезагрузить Windows** и убедиться, что Docker Desktop стартовал (иконка в трэе «Docker Desktop is running»).
 
-**GPU-диагностика** (выполнить один раз):
+Для GPU-прохода в Docker на Windows ничего отдельно ставить **не нужно**: Docker Desktop сам подхватывает NVIDIA GPU через WSL 2, если стоит свежий драйвер. Проверить можно так:
 
-```cmd
-nvidia-smi
+```powershell
+docker run --rm --gpus=all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi
 ```
 
-Должен быть виден GPU и ≥ 8 GB total. Если нет — драйвер не поставлен / карта не поддерживается.
+Команда должна вывести таблицу со списком GPU — значит проброс работает.
 
 ---
 
 ## 2. Получить репозиторий
 
-```cmd
+```powershell
 cd C:\
-mkdir Хакатоны\MTS True Tech
-cd Хакатоны\MTS True Tech
+mkdir "Хакатоны\MTS True Tech"
+cd "Хакатоны\MTS True Tech"
 git clone -b kiva https://github.com/yg-margo/mts-backend-lua.git mts-backend-lua-kiva
 cd mts-backend-lua-kiva
 ```
 
-Дальше все команды **выполняются из `mts-backend-lua-kiva`** (имя папки не принципиально — главное, что это корень репо).
+Дальше все команды выполняются **из корня репозитория** (`mts-backend-lua-kiva` или как вы его назвали).
 
 ---
 
-## 3. Скачать и собрать модели Ollama
+## 3. Запустить стек
 
-Ollama при установке добавляется в автозапуск и сама слушает `http://localhost:11434`. Если её нет в трэе — запусти «Ollama» из меню Пуск.
+### 3.1. С GPU (рекомендуется — соответствует ТЗ)
 
-```cmd
-ollama pull qwen2.5-coder:7b
-ollama pull nomic-embed-text
-ollama create lua-coder:mts -f app\Modelfile
+```powershell
+docker compose --profile gpu up --build
 ```
 
-- `qwen2.5-coder:7b` (~4.7 GB) — базовая модель-кодер.
-- `nomic-embed-text` (~274 MB) — эмбеддер для гибридного RAG (BM25 + dense).
-- `lua-coder:mts` — кастомный тэг, собранный из `app/Modelfile`. В нём зашиты `num_ctx=4096`, `num_predict=256`, `num_batch=1`, `temperature=0.2` и few-shot-примеры. Именно этот тэг ждёт `.env` (`LLM_MODEL=lua-coder:mts`).
+Первый запуск:
+1. Соберёт образ `mts-lua-app:local` (~3–5 минут, качает Node/Python-зависимости и собирает фронтенд).
+2. Поднимет два контейнера: `ollama` (с NVIDIA-пробросом) и `app`.
+3. `docker-entrypoint.sh` в контейнере `app` автоматически:
+   - дождётся Ollama на `http://ollama:11434`;
+   - выполнит `ollama pull qwen2.5-coder:7b` (~4.7 GB, несколько минут);
+   - соберёт кастомный тэг `lua-coder:mts` из `app/Modelfile` (прошиты `num_ctx=4096`, `num_predict=256`, `num_batch=1`, `temperature=0.2` и few-shot-примеры).
+4. Запустит FastAPI на `:8080`. Ждите строки `=== WARMUP DONE ===` в логах.
 
-Параметр `num_parallel=1` задаётся на уровне сервера Ollama, а не Modelfile. На Windows выставь переменную среды один раз:
+`num_parallel=1` прошит в `docker-compose.yml` через `OLLAMA_NUM_PARALLEL=1` на сервисе `ollama-gpu`.
 
-```cmd
-setx OLLAMA_NUM_PARALLEL 1
+### 3.2. Без GPU (CPU-only, для разработки)
+
+```powershell
+docker compose --profile cpu up --build
 ```
 
-Затем в трэе: правая кнопка по Ollama → **Quit**, и запусти заново. Проверка:
+Ожидаемо в ~10–30 раз медленнее. Подходит чтобы проверить код и UI, но **не проходит** требования по VRAM / времени отклика.
 
-```cmd
-ollama list
-ollama show lua-coder:mts
-```
+### 3.3. Остановка
 
-`ollama show` должна вывести блок `Parameters` с `num_ctx 4096`, `num_predict 256`, `num_batch 1`.
+В окне с логами — `Ctrl+C`, затем:
 
----
-
-## 4. Запустить проект
-
-В корне репо лежит `start.bat` — он сам создаст venv, поставит Python-зависимости, скопирует `.env.example → .env`, поставит `npm install` и откроет два окна (бэкенд и фронт).
-
-```cmd
-start.bat
-```
-
-Что должно получиться:
-- Окно **mts-backend** — логи Uvicorn, строка `Uvicorn running on http://0.0.0.0:8080`, плюс `=== WARMUP START ===` → `=== WARMUP DONE ===` (первый прогон модели, 5–30 сек).
-- Окно **mts-frontend** — Vite, строка вида `Local: http://localhost:5173/`.
-
-Если что-то уже стоит и нужно просто запустить — открой два `cmd` вручную:
-
-```cmd
-:: окно 1 — бэкенд
-cd C:\...\mts-backend-lua-kiva
-.venv\Scripts\activate.bat
-python run.py
-
-:: окно 2 — фронт (опционально, можно обойтись Swagger-ом)
-cd C:\...\mts-backend-lua-kiva\front
-npm run dev
+```powershell
+docker compose down          # остановить контейнеры, сохранить скачанные модели
+docker compose down -v       # + удалить volume ollama_models (сотрёт скачанные модели)
 ```
 
 ---
 
-## 5. Как проверять (для проверяющих)
+## 4. Как проверять (для проверяющих)
 
-### 5.1. Быстрая проверка через Swagger (минимальный путь, фронт не нужен)
+### 4.1. UI
 
-1. Открыть <http://localhost:8080/docs>.
-2. Развернуть `POST /generate` → **Try it out**.
-3. Вставить тело:
+Открыть <http://localhost:8080/> — собранный Vite-фронт отдаётся из того же контейнера. Ввести промпт, увидеть сгенерированный Lua в Monaco-редакторе и скелет инпутов в InputNode.
 
-   ```json
-   { "prompt": "function that validates an email address" }
-   ```
+### 4.2. Swagger / `curl`
 
-4. **Execute**. Ожидаемый ответ `200 OK` с полем `code`, в котором лежит валидный Lua (проходит `luac -p`).
+Минимальный путь без фронта — <http://localhost:8080/docs>, `POST /generate` → **Try it out**:
 
-Альтернативно — через `curl` в новом `cmd`:
-
-```cmd
-curl -X POST http://localhost:8080/generate ^
-  -H "Content-Type: application/json" ^
-  -d "{\"prompt\":\"function that validates an email address\"}"
+```json
+{ "prompt": "function that validates an email address" }
 ```
 
-### 5.2. Проверка через UI
+Или из PowerShell:
 
-Открой URL, который показал Vite (обычно <http://localhost:5173/>). Введи тот же промпт — ответ появится в Monaco-редакторе.
+```powershell
+curl.exe -X POST http://localhost:8080/generate `
+  -H "Content-Type: application/json" `
+  -d '{\"prompt\":\"function that validates an email address\"}'
+```
 
-### 5.3. Проверка VRAM и параметров инференса (обязательный шаг из ТЗ)
+Ожидаемый ответ `200 OK` с полем `code` (валидный Lua, проходит `luac -p`) и `inputs` (скелет полей для InputNode).
 
-Параллельно с запросом запусти в отдельном окне:
+### 4.3. Проверка VRAM и параметров инференса (обязательный шаг из ТЗ)
 
-```cmd
+Во время генерации в отдельном окне PowerShell:
+
+```powershell
 nvidia-smi -l 1
 ```
 
-Во время генерации:
-- процесс `ollama.exe` должен держать < 8000 MiB;
+Должно быть:
+- процесс `ollama` (внутри контейнера) держит < 8000 MiB;
 - `GPU-Util` скачет на 80–100 %;
-- `CPU offload` отсутствует (Ollama по умолчанию кладёт всё на GPU; если VRAM мало — она выгружает слои в RAM, и GPU-Util будет колебаться в районе 0–20 %).
+- нет CPU-offload (если VRAM не хватает, Ollama выгрузит слои в RAM, и GPU-Util будет 0–20 %).
 
 Параметры модели:
 
-```cmd
-ollama show lua-coder:mts
+```powershell
+docker exec ollama ollama show lua-coder:mts
 ```
 
-Должны совпадать с ТЗ: `num_ctx=4096`, `num_predict=256`, `num_batch=1`, `num_parallel=1` (последний — env на сервере).
+Должны совпадать с ТЗ: `num_ctx=4096`, `num_predict=256`, `num_batch=1`. `num_parallel=1` — через env:
 
-### 5.4. Эталонные промпты для проверки
+```powershell
+docker exec ollama env | Select-String OLLAMA_NUM_PARALLEL
+```
 
-Три примера зашиты в `app/Modelfile` как few-shot — на них модель должна отвечать стабильно:
+### 4.4. Эталонные промпты
+
+Три промпта зашиты в `app/Modelfile` как few-shot — на них модель должна отвечать стабильно:
 
 1. `function that validates an email address`
 2. `сумма двух чисел`
 3. `перевести строку YYYYMMDD в ISO-дату`
 
-Полезно дёрнуть свой промпт вне few-shot — например `factorial of n` или `разбить строку на слова` — чтобы увидеть работу пайплайна планер → RAG → кодер → валидатор → фиксер.
+Полезно дёрнуть свой промпт вне few-shot — например `factorial of n` или `разбить строку на слова` — чтобы увидеть работу пайплайна планнер → кодер → валидатор → фиксер.
 
-### 5.5. Чек-лист соответствия ТЗ
+### 4.5. Чек-лист соответствия ТЗ
 
 - [ ] Локальная open-source модель через Ollama (`lua-coder:mts`, базируется на `qwen2.5-coder:7b`).
-- [ ] Никаких внешних AI-API — проверяется по `app/services/llm_client.py` (`base_url` смотрит на `http://localhost:11434/v1`).
-- [ ] Параметры: `num_ctx=4096`, `num_predict=256`, `num_batch=1`, `num_parallel=1` (`ollama show` + `OLLAMA_NUM_PARALLEL`).
+- [ ] Никаких внешних AI-API — проверяется по `app/services/llm_client.py` (`base_url` смотрит на Ollama в Docker-сети).
+- [ ] Параметры: `num_ctx=4096`, `num_predict=256`, `num_batch=1`, `num_parallel=1` (`docker exec ollama ollama show …` + `OLLAMA_NUM_PARALLEL`).
 - [ ] Пиковый VRAM ≤ 8 GB (`nvidia-smi` во время генерации).
-- [ ] Есть валидация: `luac -p` в `app/services/validator.py` + опциональный `selene`.
-- [ ] Есть хотя бы одна итерация доработки: `MAX_FIX_CYCLES=1` в `.env`, фикс-цикл в `pipeline.py`.
-- [ ] Есть RAG: hybrid BM25 + `nomic-embed-text`, корпус `docs/lua_examples.txt`, код в `app/services/rag.py`.
-- [ ] Демо воспроизводится локально — эта инструкция и `start.bat`.
+- [ ] Есть валидация: `luac -p` в `app/services/validator.py` + форбид-гард (`_check_forbidden_identifiers`) + опциональный `selene`.
+- [ ] Есть хотя бы одна итерация доработки: `MAX_FIX_CYCLES=1`, фикс-цикл в `pipeline.py`.
+- [ ] Демо воспроизводится одной командой `docker compose --profile gpu up --build`.
 
 ---
 
-## 6. Траблшутинг
+## 5. Траблшутинг
 
 | Симптом | Причина | Что делать |
 |---|---|---|
-| `ERROR: npm not on PATH` | Node.js не поставлен или старое окно `cmd` | Поставить Node LTS, открыть **новое** окно `cmd` |
-| `ERROR: python not on PATH` | Python не в PATH | Переустановить Python с галкой «Add to PATH», либо добавить вручную |
-| `luac: command not found` в логах бэкенда | `luac` не в PATH | Поставить Lua (см. п.1), перезапустить `start.bat` |
-| `connection refused` на `:11434` | Ollama не запущена | Запустить Ollama из меню Пуск; проверить иконку в трэе |
-| `model 'lua-coder:mts' not found` | Пропущен `ollama create` | Выполнить `ollama create lua-coder:mts -f app\Modelfile` |
+| `docker: command not found` | Docker Desktop не установлен / не запущен | Установить Docker Desktop и дождаться, пока иконка в трэе скажет `running` |
+| `could not select device driver "nvidia"` | Нет NVIDIA-проброса в Docker Desktop | Обновить драйвер NVIDIA (≥ 552); убедиться что в Docker Desktop включён WSL 2 backend |
+| `port 8080 is already allocated` | Порт занят другим процессом | `netstat -ano | findstr :8080` → `taskkill /PID <pid> /F`, либо сменить маппинг в `docker-compose.yml` (`ports: ["8081:8080"]`) |
+| `Ollama unreachable after 60s` в логах `app` | Контейнер `ollama` не стартовал / профиль не указан | Проверить `docker compose ps`; всегда запускать с `--profile gpu` или `--profile cpu` |
 | `CUDA out of memory` / очень медленно | Другие приложения занимают VRAM, либо карта < 8 GB | Закрыть браузеры/игры/Stable Diffusion; если карта мелкая — решение не пройдёт ТЗ |
-| Порт 8080 занят | Другой сервис на порту | `netstat -ano | findstr :8080` → убить процесс через `taskkill /PID <pid> /F`, либо поменять порт в `run.py` |
-| Фронт не видит бэкенд | CORS / порт фронта не 5173-5175/3000/4173 | Смотри `app/main.py:88` (`allow_origin_regex`) — добавить свой порт |
-| `Failed to load model` в Ollama | Мало VRAM / слишком большая квантизация | По умолчанию `qwen2.5-coder:7b` = Q4_K_M, это ~4.7 GB. Если не помещается — освободи VRAM; ставить более тяжёлую квантизацию нельзя (нарушит 8 GB лимит) |
-| Warmup падает с таймаутом | Модель качается первый раз | Подождать, дать `ollama pull` дозакончиться. Следующий старт будет быстрым |
+| `pull … failed` в логах entrypoint | Нет интернета внутри контейнера / блокировка | Проверить прокси в Docker Desktop (`Settings → Resources → Proxies`); можно пулить заранее: `docker exec ollama ollama pull qwen2.5-coder:7b` |
+| Warmup падает с таймаутом | Модель качается первый раз | Подождать, дать `ollama pull` дозакончиться. Следующий старт будет быстрым — модели лежат в volume `ollama_models` |
+| Фронт не открывается на `:8080` | Билд фронта упал в Dockerfile | Пересобрать с `--no-cache`: `docker compose build --no-cache app` |
+| `warning: no space left on device` | Docker Desktop упёрся в лимит WSL-диска | Docker Desktop → Settings → Resources → Disk image size — поднять; либо `docker system prune -a` |
 
 ---
 
-## 7. Остановка
+## 6. Полезные ссылки
 
-- В окнах бэкенда и фронта нажми `Ctrl+C`, потом `Y` / закрой окно.
-- Ollama оставляй запущенной — её завершение: правая кнопка по иконке в трэе → **Quit**.
-
----
-
-## 8. Полезные ссылки
-
+- UI (Vite SPA): <http://localhost:8080/>
 - Swagger UI: <http://localhost:8080/docs>
 - ReDoc: <http://localhost:8080/redoc>
 - OpenAPI JSON: <http://localhost:8080/openapi.json>
-- Фронт (Vite): <http://localhost:5173/>

@@ -37,7 +37,7 @@ if ($LASTEXITCODE -eq 0) {
 
 # 4. Build + up
 Log "Запуск: docker compose --profile $profile up --build"
-Log "Первый старт качает ~5 GB (образ Ollama + qwen2.5-coder:7b + nomic-embed-text)."
+Log "Первый старт качает ~5 GB (образ Ollama + qwen2.5-coder:7b)."
 Log "Ждите в логах строки '=== WARMUP DONE ===' — после неё открывайте http://localhost:8080"
 Write-Host ""
 docker compose --profile $profile up --build

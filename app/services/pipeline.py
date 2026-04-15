@@ -1,5 +1,5 @@
 """
-pipeline.py — оркестратор: Clarifier → Planner → Searcher → LuaNode → Validator/Fixer.
+pipeline.py — оркестратор: Clarifier → Planner → LuaNode → Validator/Fixer.
 
 LuaNode is the final stage: it produces a complete Lua script plus an
 algorithmically-inferred input contract (the set of `input.<field>` paths the
@@ -32,10 +32,9 @@ from app.services.prompts import (
     fixer_user,
     planner_user,
 )
-from app.services.chat_sessions import is_edit_intent, truncate_code_for_context
+from app.services.chat_sessions import truncate_code_for_context
 from app.services.chunker import PackResult, chunk_lua, pack_chunks
 from app.services.input_extractor import extract_entry_point, extract_inputs
-from app.services.rag import search_snippets
 from app.services.validator import validate
 
 log = logging.getLogger(__name__)
@@ -165,11 +164,6 @@ async def run_planner(user_prompt: str) -> Plan:
         return Plan(steps=[user_prompt])
 
 
-async def run_searcher(step: str) -> str:
-    # Hybrid BM25 + dense + RRF; токенизация/стоп-слова — внутри search_snippets.
-    return await search_snippets(step)
-
-
 async def run_lua_node(
     step: str,
     snippet: str,
@@ -207,9 +201,8 @@ async def run_lua_node_edit(
 ) -> str:
     """Одноходовая правка существующего Lua-артефакта.
 
-    Один LLM-вызов, ≤ lua_node_max_tokens (=256) output-токенов. Planner и
-    searcher намеренно пропускаем: RAG-сниппеты конкурировали бы за input-токены
-    с previous_code, а сам previous_code уже содержит всё необходимое для
+    Один LLM-вызов, ≤ lua_node_max_tokens (=256) output-токенов. Planner
+    намеренно пропускаем: previous_code уже содержит всё необходимое для
     локальной правки.
     """
     messages = [
@@ -350,18 +343,12 @@ async def _emit_validator(emit: Emit, result: ValidationResult) -> None:
 
 
 async def _plan_and_code(user_prompt: str, emit: Emit = None) -> str:
-    """Общий пост-clarifier пайплайн: [planner →] searcher → lua_node → fix loop."""
+    """Общий пост-clarifier пайплайн: [planner →] lua_node → fix loop."""
     if _looks_single_task(user_prompt):
         log.info("[pipeline] single-task shortcut: skipping planner")
-        await _emit_stage(emit, "searcher")
-        t = time.perf_counter()
-        snippet = await run_searcher(user_prompt)
-        log.info("[pipeline] searcher done in %.2fs (snippet_chars=%d)", time.perf_counter() - t, len(snippet))
-        if emit is not None:
-            await emit({"type": "snippet", "preview": snippet[:200]})
         await _emit_stage(emit, "coder")
         t = time.perf_counter()
-        full_code = await run_lua_node(user_prompt, snippet, emit=emit)
+        full_code = await run_lua_node(user_prompt, "", emit=emit)
         log.info("[pipeline] coder done in %.2fs (code_chars=%d)", time.perf_counter() - t, len(full_code))
         if emit is not None:
             await emit({"type": "stage_done", "stage": "coder", "code": full_code})
@@ -374,23 +361,16 @@ async def _plan_and_code(user_prompt: str, emit: Emit = None) -> str:
     if emit is not None:
         await emit({"type": "plan", "steps": plan.steps})
 
-    await _emit_stage(emit, "searcher")
     if len(plan.steps) == 1:
         step = plan.steps[0]
         log.info("Step: %s", step)
-        snippet = await run_searcher(step)
-        if emit is not None:
-            await emit({"type": "snippet", "preview": snippet[:200]})
         await _emit_stage(emit, "coder")
-        full_code = await run_lua_node(step, snippet, emit=emit)
+        full_code = await run_lua_node(step, "", emit=emit)
     else:
         combined_task = _format_multistep_task(user_prompt, plan.steps)
         log.info("Multi-step task (%d steps) merged into single lua_node call", len(plan.steps))
-        snippet = await run_searcher(user_prompt)
-        if emit is not None:
-            await emit({"type": "snippet", "preview": snippet[:200]})
         await _emit_stage(emit, "coder")
-        full_code = await run_lua_node(combined_task, snippet, emit=emit)
+        full_code = await run_lua_node(combined_task, "", emit=emit)
 
     if emit is not None:
         await emit({"type": "stage_done", "stage": "coder", "code": full_code})
@@ -404,8 +384,10 @@ async def generate_code(
 ) -> GenerationOutcome:
     """Полный пайплайн нового запроса: сначала clarifier, потом (опционально) код.
 
-    Если передан previous_code и промпт выглядит как правка (is_edit_intent),
-    идём по короткой ветке: только coder + fixer, без clarifier/planner/searcher.
+    Если передан previous_code, идём по короткой ветке (coder-edit + fixer),
+    без clarifier/planner. Это ветка «продолжаем работу над тем же скриптом»
+    — первый запрос в сессии (previous_code=None) по-прежнему проходит
+    полный пайплайн.
     """
     log.info("[pipeline] === START prompt=%r (len=%d) ===", user_prompt[:80], len(user_prompt))
     t_total = time.perf_counter()
@@ -420,7 +402,7 @@ async def generate_code(
             await emit({"type": "error", "message": msg})
         return GenerationOutcome(questions=[msg])
 
-    if previous_code and is_edit_intent(user_prompt):
+    if previous_code:
         log.info("[pipeline] edit branch: previous_code=%d chars", len(previous_code))
         await _emit_stage(emit, "coder")
         t = time.perf_counter()
@@ -554,9 +536,8 @@ class PipelineError(Exception):
 
 
 # ---------------------------------------------------------------------------
-# /generate-from-context flow — user-composed nodes drive the lua_node context
-# instead of RAG retrieval. Clarifier is skipped by design (building nodes
-# IS the clarification step).
+# /generate-from-context flow — user-composed nodes drive the lua_node context.
+# Clarifier is skipped by design (building nodes IS the clarification step).
 # ---------------------------------------------------------------------------
 
 

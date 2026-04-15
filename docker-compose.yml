@@ -6,9 +6,7 @@ services:
     image: mts-lua-app:local
     environment:
       LLM_BASE_URL: http://ollama:11434/v1
-      EMBED_BASE_URL: http://ollama:11434/v1
       LLM_MODEL: lua-coder:mts
-      EMBED_MODEL: nomic-embed-text
       BASE_MODEL: qwen2.5-coder:7b
       AUTO_BUILD_MODEL: "1"
     ports: ["8080:8080"]
@@ -55,9 +53,8 @@ volumes:
 #   Linux/WSL no-GPU: docker compose --profile cpu up --build
 #   macOS / native Ollama:
 #       brew install ollama && ollama serve &
-#       ollama pull qwen2.5-coder:7b && ollama pull nomic-embed-text
+#       ollama pull qwen2.5-coder:7b
 #       ollama create lua-coder:mts -f app/Modelfile
 #       LLM_BASE_URL=http://host.docker.internal:11434/v1 \
-#       EMBED_BASE_URL=http://host.docker.internal:11434/v1 \
 #       AUTO_BUILD_MODEL=0 \
 #       docker compose up app --build

@@ -6,7 +6,6 @@ export type ThinkingStage = WsStage;
 export type ThinkingEvent =
   | { kind: "stage"; stage: ThinkingStage; cycle?: number; errorMsg?: string }
   | { kind: "plan"; steps: string[] }
-  | { kind: "snippet"; preview: string }
   | {
       kind: "code_delta";
       stage: "coder" | "fixer";

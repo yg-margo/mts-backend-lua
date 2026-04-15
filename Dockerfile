@@ -28,8 +28,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app ./app
 COPY run.py ./
 
-COPY lua_examples.txt ./docs/lua_examples.txt
-
 COPY --from=frontend-builder /front/dist ./app/static
 
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh

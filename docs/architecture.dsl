@@ -4,7 +4,7 @@ workspace "LocalScript API" "Lua code generator для MWS Octapi/LowCode, ра�
 
         developer = person "Разработчик Octapi/LowCode" "Пишет задачу на естественном языке, получает Lua-скрипт и исполняет его локально."
 
-        ollama = softwareSystem "Ollama" "Локальный LLM-хост на :11434. Модели: lua-coder:mts (chat, num_ctx=4096, num_predict=256) и nomic-embed-text (embeddings). OpenAI-compat API." {
+        ollama = softwareSystem "Ollama" "Локальный LLM-хост на :11434. Модель: lua-coder:mts (chat, num_ctx=4096, num_predict=256). OpenAI-compat API." {
             tags "External"
         }
 
@@ -12,11 +12,7 @@ workspace "LocalScript API" "Lua code generator для MWS Octapi/LowCode, ра�
             tags "External"
         }
 
-        corpus = softwareSystem "Lua Examples Corpus" "docs/lua_examples.txt — корпус Octapi-примеров для RAG. Блоки разделены двумя и более пустыми строками." {
-            tags "External"
-        }
-
-        localscript = softwareSystem "LocalScript API" "Сервис генерации Lua через локальный LLM с clarifier/planner/RAG/validator/fixer пайплайном." {
+        localscript = softwareSystem "LocalScript API" "Сервис генерации Lua через локальный LLM с clarifier/planner/validator/fixer пайплайном." {
 
             frontend = container "Frontend SPA" "3-панельное SPA: Chat + Monaco-редактор Lua + xyflow node-graph. Lua исполняется локально в браузере через wasmoon." "Vite + React 18 + TS + Zustand 5 + xyflow 12 + Monaco + Tailwind + wasmoon" {
                 tags "Browser"
@@ -27,13 +23,13 @@ workspace "LocalScript API" "Lua code generator для MWS Octapi/LowCode, ра�
 
                 flowStore = component "flowStore" "Состояние графа: nodes, edges, мутации, gatherContextForCoder (BFS по prompt/example/hint)." "Zustand 5"
                 chatStore = component "chatStore" "История сообщений, isGenerating, chat_session_id." "Zustand 5"
-                thinkingStore = component "thinkingStore" "Pipeline-события из WS: стадии, токены, snippet preview." "Zustand 5"
+                thinkingStore = component "thinkingStore" "Pipeline-события из WS: стадии, токены, план." "Zustand 5"
 
                 apiLib = component "lib/api.ts" "fetch-клиент для POST /generate и POST /generate-from-context." "TypeScript + fetch"
-                wsLib = component "lib/ws.ts" "Нативный WebSocket-клиент для /generate/ws. Типизирует события stage/token/plan/snippet/validator/clarification/done/error." "TypeScript + WebSocket"
+                wsLib = component "lib/ws.ts" "Нативный WebSocket-клиент для /generate/ws. Типизирует события stage/token/plan/validator/clarification/done/error." "TypeScript + WebSocket"
             }
 
-            backend = container "Backend API" "FastAPI-сервис: REST + WebSocket. Оркестрирует clarifier/planner/RAG/coder/validator/fixer. Порт 8080." "Python 3 + FastAPI + Uvicorn + Pydantic v2 + AsyncOpenAI + rank_bm25 + tree-sitter + tiktoken" {
+            backend = container "Backend API" "FastAPI-сервис: REST + WebSocket. Оркестрирует clarifier/planner/coder/validator/fixer. Порт 8080." "Python 3 + FastAPI + Uvicorn + Pydantic v2 + AsyncOpenAI + rank_bm25 + tree-sitter + tiktoken" {
 
                 apiRoutes = component "api/routes.py" "Роутер: POST /generate (clarification-aware, 200/410/422/500), POST /generate-from-context (node-graph), WS /generate/ws (streaming + 15s heartbeat)." "FastAPI router"
 
@@ -41,11 +37,9 @@ workspace "LocalScript API" "Lua code generator для MWS Octapi/LowCode, ра�
 
                 llmClient = component "services/llm_client.py" "AsyncOpenAI-клиент к Ollama: chat / chat_json (JSON-mode) / chat_stream. keep_alive=30m." "Python + openai SDK"
 
-                ragService = component "services/rag.py" "Hybrid retriever: BM25 (rank_bm25) + dense embeddings (Ollama nomic-embed-text) + RRF (rrf_k=60, top_k=2). Ленивые индексы под asyncio.Lock; fallback BM25-only при недоступности embeddings." "Python + rank_bm25 + numpy"
-
                 validator = component "services/validator.py" "Валидация Lua через subprocess: luac -p + опциональный selene. _line_to_block даёт контекст ±5 строк вокруг ошибки." "Python subprocess"
 
-                chunker = component "services/chunker.py" "tree-sitter Lua AST → chunks + tiktoken packer под context_budget_tokens=2800. Только для /generate-from-context." "Python + tree-sitter + tiktoken"
+                chunker = component "services/chunker.py" "tree-sitter Lua AST → chunks + tiktoken packer с BM25-скорингом под context_budget_tokens=2800. Только для /generate-from-context." "Python + tree-sitter + tiktoken + rank_bm25"
 
                 inputExtractor = component "services/input_extractor.py" "AST-walk по сгенерированному Lua: input.<field>-contract и entry_point{name, params}. Для автозаполнения InputNode на фронте." "Python AST"
 
@@ -55,9 +49,9 @@ workspace "LocalScript API" "Lua code generator для MWS Octapi/LowCode, ра�
 
                 prompts = component "services/prompts.py" "Шаблоны: CLARIFIER/PLANNER/LUA_NODE/LUA_NODE_EDIT/FIXER SYSTEM + user-функции. Расходуют input-токены из num_ctx=4096." "Python templates"
 
-                config = component "core/config.py" "pydantic-settings. llm_*/embed_* endpoints, rag_top_k=2, rag_rrf_k=60, все *_max_tokens ≤256, max_fix_cycles=1, context_budget_tokens=2800, TTL. env-file ../../.env." "Pydantic Settings"
+                config = component "core/config.py" "pydantic-settings. llm_* endpoint, все *_max_tokens ≤256, max_fix_cycles=1, context_budget_tokens=2800, TTL. env-file ../../.env." "Pydantic Settings"
 
-                mainApp = component "main.py" "FastAPI-приложение. CORS для localhost:5173-5175/3000/4173. Lifespan warmup: ping LLM + ping RAG (оба fail-open)." "FastAPI lifespan"
+                mainApp = component "main.py" "FastAPI-приложение. CORS для localhost:5173-5175/3000/4173. Lifespan warmup: ping LLM (fail-open)." "FastAPI lifespan"
             }
 
             sessions = container "Sessions Store" "In-memory TTL-таблицы внутри процесса Backend: clarification (1800s) и chat-edit (3600s)." "Python dict" {
@@ -67,18 +61,15 @@ workspace "LocalScript API" "Lua code generator для MWS Octapi/LowCode, ра�
 
         # --- System Context ---
         developer -> localscript "Пишет задачу, получает Lua-код" "HTTP/WS"
-        localscript -> ollama "Chat completions + embeddings" "HTTP (OpenAI-compat)"
+        localscript -> ollama "Chat completions" "HTTP (OpenAI-compat)"
         localscript -> luaTools "Валидирует Lua" "subprocess"
-        localscript -> corpus "Читает корпус RAG" "file read"
 
         # --- Container level ---
         developer -> frontend "Открывает браузер" "HTTP"
         frontend -> backend "POST /generate, POST /generate-from-context" "HTTP+JSON"
         frontend -> backend "WS /generate/ws — стриминг pipeline" "WebSocket+JSON"
         backend -> ollama "Chat (stream / JSON-mode)" "POST /v1/chat/completions"
-        backend -> ollama "Embeddings (nomic-embed-text)" "POST /v1/embeddings"
         backend -> luaTools "luac -p, опц. selene" "subprocess"
-        backend -> corpus "Читает docs/lua_examples.txt" "open()"
         backend -> sessions "peek/create/pop clarification; ensure/update chat" "in-process"
 
         # --- Frontend components ---
@@ -97,19 +88,15 @@ workspace "LocalScript API" "Lua code generator для MWS Octapi/LowCode, ра�
         apiRoutes -> sessionsStore "peek/create/pop + ensure/update"
         apiRoutes -> models "Валидирует request/response"
         pipeline -> llmClient "chat / chat_json / chat_stream"
-        pipeline -> ragService "search_snippets (hybrid)"
         pipeline -> validator "validate() → ValidationResult"
         pipeline -> chunker "chunk_lua + pack_chunks (context-mode)"
         pipeline -> inputExtractor "extract_entry_point + extract_inputs"
         pipeline -> sessionsStore "is_edit_intent + truncate_code_for_context"
         pipeline -> prompts "все SYSTEM + user-шаблоны"
         pipeline -> config "все knobs (max_tokens, max_fix_cycles, …)"
-        ragService -> llmClient "Embeddings через отдельный AsyncOpenAI"
-        ragService -> corpus "Ленивое чтение при первом запросе"
         validator -> luaTools "luac + selene"
         llmClient -> ollama "Chat (OpenAI-compat)"
         mainApp -> llmClient "Warmup ping"
-        mainApp -> ragService "Warmup search_snippets"
         mainApp -> apiRoutes "include_router"
     }
 
@@ -129,7 +116,7 @@ workspace "LocalScript API" "Lua code generator для MWS Octapi/LowCode, ра�
         component backend "BackendComponents" {
             include *
             autoLayout tb
-            description "Внутренности Backend API: роутер, оркестратор, стадии пайплайна, LLM-клиент, RAG, validator, chunker, input extractor, config, main."
+            description "Внутренности Backend API: роутер, оркестратор, стадии пайплайна, LLM-клиент, validator, chunker, input extractor, config, main."
         }
 
         component frontend "FrontendComponents" {

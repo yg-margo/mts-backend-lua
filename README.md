@@ -9,7 +9,6 @@
 - Модель должна быть легковесной. Для демо и проверки модель должна запускаться локально через Ollama на GPU 8 GB VRAM и полностью выполняться на GPU (без CPU offload).
 - Проверка проводится на эталонном запросе при фиксированных параметрах: `num_ctx=4096`, `num_predict=256`, `batch=1`, `parallel=1`.
 - Ограничение: пиковое потребление VRAM ≤ 8.0 GB, измеряется через `nvidia-smi` (peak memory). Квантизация разрешена.
-- В README команда указывает точный `ollama pull <tag>` и эти параметры запуска.
 - Генерация должна работать на локальной open-source модели без обращения к внешним AI-вендорам.
 - Использование OpenAI, Anthropic и аналогичных внешних AI API для генерации или доработки кода запрещено.
 - Рекомендуемый стек: Python + open-source LLM.
@@ -17,23 +16,66 @@
 - Все зависимости, модели и шаги запуска должны быть описаны так, чтобы демо-контур можно было воспроизвести локально.
 - Если используется база знаний, retrieval или набор шаблонов, они должны работать локально и быть включены в поставку решения и описаны в инструкции.
 
-## Запуск
+## Запуск (Docker)
+
+Всё окружение поднимается одной командой `docker compose`. В образе уже собраны бэкенд (FastAPI + Uvicorn на `:8080`), собранный Vite-фронтенд (отдаётся по `/`) и `luac` для валидации. Первый старт сам скачает `qwen2.5-coder:7b` и соберёт `lua-coder:mts` из `app/Modelfile` (см. `docker-entrypoint.sh`).
+
+### 1. Поднять стек
+
+Запускать из корня `mts-backend-lua/`. Выбрать один из профилей:
 
 ```bash
-# 1. Модели Ollama (обе локальные, open-source)
-ollama pull qwen2.5-coder:7b         # генератор, ~4.2 ГБ VRAM Q4
-ollama pull nomic-embed-text         # эмбеддер для RAG, ~274 МБ
+# Linux + NVIDIA GPU (рекомендуется: укладывается в VRAM ≤8 GB по ТЗ)
+docker compose --profile gpu up --build
 
-# 2. Python-окружение
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+# Linux / WSL без GPU — работает, но генерация будет медленной
+docker compose --profile cpu up --build
 
-# 3. Сервис (биндится на 0.0.0.0:8080)
-python run.py
+# macOS — Docker Desktop не пробрасывает GPU, поэтому Ollama держим на хосте,
+# а в контейнере поднимаем только приложение:
+brew install ollama && ollama serve &
+ollama pull qwen2.5-coder:7b
+ollama create lua-coder:mts -f app/Modelfile
+LLM_BASE_URL=http://host.docker.internal:11434/v1 \
+AUTO_BUILD_MODEL=0 \
+docker compose up app --build
 ```
 
-Swagger: `http://localhost:8080/docs` · Sandbox: `http://localhost:8080/sandbox`.
+### 2. Дождаться прогрева
 
-## RAG
+В логах контейнера `app` должны появиться строки `=== WARMUP START ===` → `LLM warmup OK …` → `=== WARMUP DONE ===` (первый прогон — 5–30 секунд после скачивания моделей). Первая загрузка моделей в Ollama может занять несколько минут — `docker-entrypoint.sh` пулит их автоматически и логирует прогресс.
 
-Корпус — `docs/lua_examples.txt` (блоки разделены ≥2 пустыми строками). Ретривер — **hybrid BM25 + dense embeddings с Reciprocal Rank Fusion (k=60)**: BM25 ловит точные идентификаторы и ключевые слова, `nomic-embed-text` через Ollama — семантические переформулировки (включая русский). Индексы строятся лениво при первом запросе и кэшируются в процессе. Если эмбеддер недоступен, сервис деградирует на BM25-only и продолжает работать.
+### 3. Проверить
+
+- UI: <http://localhost:8080/>
+- Swagger: <http://localhost:8080/docs>
+- ReDoc: <http://localhost:8080/redoc>
+
+Быстрый smoke-test генерации:
+
+```bash
+curl -X POST http://localhost:8080/generate \
+  -H "Content-Type: application/json" \
+  -d '{"prompt":"function that validates an email address"}'
+```
+
+Ответ `200 OK` с полем `code` (валидный Lua, проходит `luac -p`) и полем `inputs` (JSON-скелет для InputNode).
+
+### 4. Проверка VRAM и параметров (для ревью по ТЗ)
+
+Параллельно с генерацией на хосте:
+
+```bash
+nvidia-smi -l 1                    # peak VRAM должно быть ≤ 8 GB
+docker exec ollama ollama show lua-coder:mts   # num_ctx=4096, num_predict=256, num_batch=1
+```
+
+`num_parallel=1` задаётся переменной среды `OLLAMA_NUM_PARALLEL=1` в `docker-compose.yml` — проверить можно через `docker exec ollama env | grep OLLAMA_NUM_PARALLEL`.
+
+### 5. Остановить
+
+```bash
+docker compose down              # остановить контейнеры, сохранив модели в volume
+docker compose down -v           # + удалить скачанные модели Ollama (volume ollama_models)
+```
+

@@ -36,7 +36,7 @@ fi
 
 # 4. Build + up
 log "Запуск: docker compose --profile ${PROFILE} up --build"
-log "Первый старт качает ~5 GB (образ Ollama + qwen2.5-coder:7b + nomic-embed-text)."
+log "Первый старт качает ~5 GB (образ Ollama + qwen2.5-coder:7b)."
 log "Ждите в логах строки '=== WARMUP DONE ===' — после неё открывайте http://localhost:8080"
 echo
 exec docker compose --profile "${PROFILE}" up --build

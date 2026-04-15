@@ -6,7 +6,6 @@ import { useThinking, type ThinkingEvent } from "@/store/thinkingStore";
 const STAGE_LABELS: Record<string, string> = {
   clarifier: "Уточняю задачу",
   planner: "Планирую шаги",
-  searcher: "Ищу примеры в базе",
   coder: "Пишу код",
   validator: "Проверяю синтаксис",
   fixer: "Чиню ошибки",
@@ -198,21 +197,6 @@ function StageDetail({
           </li>
         ))}
       </ol>
-    );
-  }
-
-  if (event.kind === "snippet") {
-    if (!event.preview) {
-      return (
-        <div className="ml-3 text-[11px] italic text-mts-muted">
-          подходящих примеров не нашлось
-        </div>
-      );
-    }
-    return (
-      <pre className="ml-3 max-h-24 overflow-auto whitespace-pre-wrap rounded-md bg-mts-surface px-2 py-1.5 font-mono text-[11px] text-mts-muted">
-        {event.preview}
-      </pre>
     );
   }
 

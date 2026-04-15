@@ -1,7 +1,6 @@
 export type WsStage =
   | "clarifier"
   | "planner"
-  | "searcher"
   | "coder"
   | "validator"
   | "fixer";
@@ -16,7 +15,6 @@ export type WsServerEvent =
   | { type: "stage"; stage: WsStage; cycle?: number; error?: string; final?: boolean }
   | { type: "stage_done"; stage: "coder" | "fixer"; code?: string; cycle?: number }
   | { type: "plan"; steps: string[] }
-  | { type: "snippet"; preview: string }
   | {
       type: "token";
       stage: "coder" | "fixer";

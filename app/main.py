@@ -25,7 +25,6 @@ logging.getLogger("openai").setLevel(logging.WARNING)
 
 from app.api.routes import router  # noqa: E402
 from app.services.llm_client import chat  # noqa: E402
-from app.services.rag import search_snippets  # noqa: E402
 
 log = logging.getLogger("app.main")
 
@@ -44,13 +43,6 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         log.warning("LLM warmup FAILED (%.2fs): %s", time.perf_counter() - t0, exc)
 
-    t1 = time.perf_counter()
-    try:
-        await search_snippets("warmup", top_k=1)
-        log.info("RAG warmup OK (%.2fs)", time.perf_counter() - t1)
-    except Exception as exc:
-        log.warning("RAG warmup FAILED (%.2fs): %s", time.perf_counter() - t1, exc)
-
     log.info("=== WARMUP DONE in %.2fs ===", time.perf_counter() - t0)
     yield
 
@@ -60,7 +52,7 @@ app = FastAPI(
     lifespan=lifespan,
     description=(
         "**LLM-powered Lua code generator** для платформы MWS Octapi / LowCode.\n\n"
-        "Pipeline: `Clarifier → Planner → RAG Searcher → Coder → Validator → Fixer`\n\n"
+        "Pipeline: `Clarifier → Planner → Coder → Validator → Fixer`\n\n"
         "Swagger UI: [/docs](/docs) · ReDoc: [/redoc](/redoc)"
     ),
     version="1.0.0",

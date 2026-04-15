@@ -10,12 +10,6 @@ class Settings(BaseSettings):
     llm_api_key: str = "ollama"
     llm_model: str = "lua-coder:mts"
 
-    embed_base_url: str = "http://localhost:11434/v1"
-    embed_api_key: str = "ollama"
-    embed_model: str = "nomic-embed-text"
-    rag_top_k: int = 2
-    rag_rrf_k: int = 60
-
     planner_max_tokens: int = 256
     lua_node_max_tokens: int = 256
     fixer_max_tokens: int = 256
@@ -24,8 +18,6 @@ class Settings(BaseSettings):
     max_fix_cycles: int = 1
     clarification_session_ttl: int = 1800
     chat_session_ttl: int = 3600
-
-    docs_path: str = "docs/lua_examples.txt"
 
     # Input-token budget for user-composed context in /generate-from-context.
     # num_ctx=4096 minus system+user+output-256 → ≈2800 is a safe ceiling.
