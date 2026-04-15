@@ -1,0 +1,63 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: mts-lua-app:local
+    environment:
+      LLM_BASE_URL: http://ollama:11434/v1
+      EMBED_BASE_URL: http://ollama:11434/v1
+      LLM_MODEL: lua-coder:mts
+      EMBED_MODEL: nomic-embed-text
+      BASE_MODEL: qwen2.5-coder:7b
+      AUTO_BUILD_MODEL: "1"
+    ports: ["8080:8080"]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  ollama:
+    profiles: ["cpu"]
+    image: ollama/ollama:0.3.14
+    container_name: ollama
+    hostname: ollama
+    ports: ["11434:11434"]
+    volumes: ["ollama_models:/root/.ollama"]
+    environment:
+      OLLAMA_NUM_PARALLEL: "1"
+      OLLAMA_KEEP_ALIVE: "30m"
+    restart: unless-stopped
+
+  ollama-gpu:
+    profiles: ["gpu"]
+    image: ollama/ollama:0.3.14
+    container_name: ollama
+    hostname: ollama
+    ports: ["11434:11434"]
+    volumes: ["ollama_models:/root/.ollama"]
+    environment:
+      OLLAMA_NUM_PARALLEL: "1"
+      OLLAMA_KEEP_ALIVE: "30m"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+
+volumes:
+  ollama_models:
+
+# Usage (run from mts-backend-lua/):
+#   Linux + NVIDIA:   docker compose --profile gpu up --build
+#   Linux/WSL no-GPU: docker compose --profile cpu up --build
+#   macOS / native Ollama:
+#       brew install ollama && ollama serve &
+#       ollama pull qwen2.5-coder:7b && ollama pull nomic-embed-text
+#       ollama create lua-coder:mts -f app/Modelfile
+#       LLM_BASE_URL=http://host.docker.internal:11434/v1 \
+#       EMBED_BASE_URL=http://host.docker.internal:11434/v1 \
+#       AUTO_BUILD_MODEL=0 \
+#       docker compose up app --build
